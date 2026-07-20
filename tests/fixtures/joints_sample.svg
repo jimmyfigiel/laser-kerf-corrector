@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="110mm" viewBox="0 0 1000 1100">
+  <!-- One element bundling three subpaths, mimicking CorelDraw's compact export style:
+       subpath 0 uses an absolute moveto (context, not a joint);
+       subpath 1 is a 3mm x 12mm joint reached via a RELATIVE moveto from subpath 0's start;
+       subpath 2 is untouched context reached via a RELATIVE moveto from subpath 1's start.
+       This is the exact shape that exposed the relative-moveto reserialization bug:
+       after correcting subpath 1, subpath 2's absolute position must stay unchanged. -->
+  <path class="cut" id="multi" fill="none" stroke="black"
+        d="M0,0 L200,0 L200,150 L0,150 Z m50,50 l120,0 l0,30 l-120,0 z m30,80 l40,0 l0,20 l-40,0 z" />
+
+  <!-- A lone slide-fit-sized joint in its own element, to test the whole-polygon path too. -->
+  <path class="cut" id="lone" fill="none" stroke="black"
+        d="M400,400 L530,400 L530,530 L400,530 Z" />
+
+  <!-- A notch cut into one edge of an otherwise unrelated boundary: the
+       notch's two walls (3mm apart) are capped at only ONE end (the notch's
+       bottom); the other "end" is the rest of this same large boundary. -->
+  <path class="cut" id="edgenotch" fill="none" stroke="black"
+        d="M0,600 L400,600 L400,700 L430,700 L430,600 L800,600 L800,1100 L0,1100 Z" />
+
+  <!-- A standalone 3mm x 12mm tab: depth 0 (not nested in anything, isolated
+       in unused canvas space), both ends capped. Both dimensions grow by
+       the full kerf, same as any other whole-subpath feature. -->
+  <path class="cut" id="tab" fill="none" stroke="black"
+        d="M850,50 L880,50 L880,170 L850,170 Z" />
+
+  <!-- A step-style tab, mimicking Inkscape-drawn CAD output (as opposed to
+       the long-wall+cap style CorelDraw tends to produce above): one wall
+       is simply interrupted and steps out then back in, rather than being
+       built from two full-length parallel walls joined by a perpendicular
+       cap. This is the construction style the original edge-pair detector
+       could not find at all (the two "matching" walls never overlap). -->
+  <path class="cut" id="stepboundary" fill="none" stroke="black"
+        d="M600,0 L800,0 L800,150 L830,150 L830,250 L800,250 L800,400 L600,400 Z" />
+</svg>

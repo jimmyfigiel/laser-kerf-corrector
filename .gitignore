@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+out_test2.svg
+test2_out.svg

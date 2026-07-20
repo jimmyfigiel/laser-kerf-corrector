@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="60mm" viewBox="0 0 1000 600">
+  <defs>
+    <style type="text/css"><![CDATA[
+      .cut {fill:none; stroke:black; stroke-width:1}
+      .engrave {fill:#ff0000}
+    ]]></style>
+  </defs>
+  <!-- Outer plate: a 500x300 rectangle with a 40x40 finger-joint tab
+       protruding from the top edge, integrated into the same closed
+       boundary (not a separate hole). -->
+  <path class="cut" id="plate"
+        d="M0,0 L230,0 L230,-40 L270,-40 L270,0 L500,0 L500,300 L0,300 Z" />
+
+  <!-- A fully enclosed rectangular slot hole inside the plate (depth 1: should shrink) -->
+  <path class="cut" id="slot" d="M100,100 L200,100 L200,150 L100,150 Z" />
+
+  <!-- A separate small part elsewhere on the sheet, its own outer boundary
+       (depth 0 in the global nesting even though it is a different path
+       element than "plate") -->
+  <polygon class="cut" id="tag" points="600,600 660,600 660,640 600,640" />
+
+  <!-- Non-cut artwork: filled, should be ignored by default selection -->
+  <path class="engrave" id="logo" d="M700,50 L720,50 L720,70 L700,70 Z" />
+
+  <!-- Group with a transform, to exercise transform handling -->
+  <g transform="translate(50,400) scale(2)">
+    <path class="cut" id="nested" d="M0,0 L50,0 L50,30 L0,30 Z" />
+  </g>
+</svg>

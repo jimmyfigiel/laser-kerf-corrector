@@ -169,6 +169,16 @@ class Feature:
     long_mm: float
     render_rect: list[tuple[float, float]]  # root space, for GUI
     is_container: bool = False  # the subpath's own leftover-boundary entry, if any
+    # Whether render_rect is a genuinely closed loop (whole-subpath and
+    # leftover-container features: render_rect is the subpath's own full
+    # closed polygon) vs. an open run of points along part of a bigger
+    # boundary (windowed-excursion and custom-added features: render_rect
+    # stops wherever the search/click-pair did, with no real edge closing
+    # the last point back to the first). The GUI needs this to know
+    # whether to render a closed <polygon> or an open <polyline> -- closing
+    # an open run would draw a highlighted "cut line" that was never
+    # actually cut.
+    is_closed_loop: bool = True
 
 
 def _cyclic_add(v: int, k: int, period: int) -> int:
@@ -280,6 +290,7 @@ def find_features(
             features.append(Feature(
                 info.element_index, info.subpath_index, "edge", window_edges,
                 short_mm, long_mm, pts,
+                is_closed_loop=False,
             ))
 
         leftover = sorted(set(range(1, period + 1)) - consumed)
@@ -365,8 +376,11 @@ def custom_feature(
     short_mm, long_mm = rect.short_len / scale, rect.long_len / scale
 
     # A manually-added feature is, by construction, a windowed excursion on
-    # an existing boundary (never the whole-subpath case) -- always EDGE.
-    return Feature(info.element_index, info.subpath_index, "edge", window_edges, short_mm, long_mm, pts)
+    # an existing boundary (never the whole-subpath case) -- always EDGE,
+    # and its points are an open run just like the auto-detected windowed
+    # case, not a closed loop.
+    return Feature(info.element_index, info.subpath_index, "edge", window_edges, short_mm, long_mm, pts,
+                    is_closed_loop=False)
 
 
 def to_payload(features: list[Feature]) -> list[dict]:
@@ -380,6 +394,7 @@ def to_payload(features: list[Feature]) -> list[dict]:
             "subpath_index": f.subpath_index,
             "kind": f.kind,
             "is_container": f.is_container,
+            "is_closed_loop": f.is_closed_loop,
             "member_edges": list(f.member_edges),
             "short_mm": round(f.short_mm, 4),
             "long_mm": round(f.long_mm, 4),

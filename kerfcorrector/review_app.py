@@ -35,20 +35,24 @@ PAGE_TEMPLATE = """<!doctype html>
   #bg-svg * { vector-effect: non-scaling-stroke !important; }
   #bg-svg path, #bg-svg polygon, #bg-svg polyline, #bg-svg line,
   #bg-svg circle, #bg-svg ellipse, #bg-svg rect { stroke-width: 1.2px !important; }
-  #overlay-svg polygon { cursor: pointer; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-  #overlay-svg polygon.ignored { fill: rgba(0,0,0,0); stroke: rgba(120,180,255,0.35); }
-  #overlay-svg polygon.hole { fill: rgba(255,150,30,0.45); stroke: #ff9622; }
-  /* No fill -- an EDGE polygon traces the feature's own cut shape, which
-     for a notch/slot is exactly the void that's physically cut away. A
-     solid fill there paints over the real cut lines underneath and makes
-     an actually-open cutout look uncut/still-filled. Outline only, same
-     treatment the old dashed-only BOUNDARY style used, so the real
-     geometry underneath stays visible for review. Covers the leftover
-     container (which can span a whole panel) just as well, for the same
-     reason -- a big panel-wide fill would otherwise wash over everything. */
-  #overlay-svg polygon.edge { fill: rgba(0,0,0,0); stroke: #3c96ff; stroke-width: 2.5; }
-  #overlay-svg polygon.ignored-merged { fill: rgba(0,0,0,0); stroke: rgba(60,150,255,0.55); stroke-dasharray: 2 3; }
-  #overlay-svg polygon.hot { stroke: #ffd400; stroke-width: 3; }
+  /* Class selectors only (not "polygon.xxx") -- a windowed EDGE feature
+     renders as a <polyline>, not a <polygon> (see shapeTag()), so a
+     tag-qualified selector would silently stop matching it. */
+  #overlay-svg polygon, #overlay-svg polyline { cursor: pointer; stroke-width: 1.2; vector-effect: non-scaling-stroke; fill: rgba(0,0,0,0); }
+  #overlay-svg .ignored { stroke: rgba(120,180,255,0.35); }
+  #overlay-svg .hole { fill: rgba(255,150,30,0.45); stroke: #ff9622; }
+  /* No fill on EDGE -- its shape traces the feature's own cut geometry,
+     which for a notch/slot is exactly the void that's physically cut
+     away. A solid fill there paints over the real cut lines underneath
+     and makes an actually-open cutout look uncut/still-filled. Outline
+     only, same treatment the old dashed-only BOUNDARY style used, so the
+     real geometry underneath stays visible for review. Covers the
+     leftover container (which can span a whole panel) just as well, for
+     the same reason -- a big panel-wide fill would otherwise wash over
+     everything. */
+  #overlay-svg .edge { stroke: #3c96ff; }
+  #overlay-svg .ignored-merged { stroke: rgba(60,150,255,0.55); stroke-dasharray: 2 3; }
+  #overlay-svg .hot { stroke: #ffd400; stroke-width: 2; }
   .click-marker { fill: #fff; stroke: #ff3355; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
   #add-mode.active { background: #b3701f; }
   #add-mode.active:hover { background: #cc7f23; }
@@ -132,10 +136,24 @@ function polyArea(points) {
   return Math.abs(area) / 2;
 }
 
+// A windowed EDGE feature's `points` are an open chain along the real cut
+// path (entry wall, cap, exit wall, ...) -- there is no real edge closing
+// the last point back to the first, that's just wherever the search
+// stopped scanning the boundary. A <polygon> draws that non-existent edge
+// anyway as part of auto-closing the shape, which reads as a highlighted
+// cut line where there isn't one. HOLE, standalone whole-subpath EDGE
+// features (e.g. a free-standing tab), and the leftover CONTAINER, by
+// contrast, always trace a subpath's own genuinely closed loop, so a
+// <polygon> is correct for them -- <polyline> never auto-closes, so it's
+// the right element for anything the server flags as not closed.
+function shapeTag(d) {
+  return d.is_closed_loop ? 'polygon' : 'polyline';
+}
+
 function rebuildPolys() {
   overlayG.innerHTML = '';
   polys = DATA.map((d, i) => {
-    const p = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    const p = document.createElementNS('http://www.w3.org/2000/svg', shapeTag(d));
     p.setAttribute('points', d.points.map(pt => pt.join(',')).join(' '));
     p.dataset.idx = i;
     p.addEventListener('click', (e) => {
@@ -366,7 +384,7 @@ async function addCustomFeature(element_index, subpath_index, p1, p2) {
   const newIdx = DATA.length;
   DATA.push(feature);
   state.push({ classification: feature.kind });
-  const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+  const poly = document.createElementNS('http://www.w3.org/2000/svg', shapeTag(feature));
   poly.setAttribute('points', feature.points.map(pt => pt.join(',')).join(' '));
   poly.dataset.idx = newIdx;
   poly.addEventListener('click', (e) => {

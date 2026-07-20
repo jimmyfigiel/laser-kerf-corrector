@@ -122,16 +122,19 @@ def test_find_features_whole_subpath_hole_and_edge():
 
     joint = _feature_by_id(elements, features, "multi", subpath_index=1)
     assert joint.kind == "hole"  # nested inside multi's outer boundary -> odd depth
+    assert joint.is_closed_loop  # whole subpath -> genuinely closed loop
     assert abs(joint.short_mm - 3.0) < 1e-6
     assert abs(joint.long_mm - 12.0) < 1e-6
 
     lone = _feature_by_id(elements, features, "lone")
     assert lone.kind == "edge"  # standalone, not nested -> even depth (solid tab)
+    assert lone.is_closed_loop  # whole subpath -> genuinely closed loop, not a window
     assert abs(lone.short_mm - 13.0) < 1e-6
     assert abs(lone.long_mm - 13.0) < 1e-6
 
     standalone_tab = _feature_by_id(elements, features, "tab")
     assert standalone_tab.kind == "edge"
+    assert standalone_tab.is_closed_loop
     assert abs(standalone_tab.short_mm - 3.0) < 1e-6
     assert abs(standalone_tab.long_mm - 12.0) < 1e-6
 
@@ -145,6 +148,12 @@ def test_find_features_embedded_notch_is_edge():
     notch = _feature_by_id(elements, features, "edgenotch")
     assert notch.kind == "edge"
     assert not notch.is_container
+    # An open run along the boundary, not a closed loop -- there's no real
+    # edge closing its last point back to its first (see kerf_tool.py's
+    # shapeTag(), which uses this to render a <polyline>, not a <polygon>,
+    # so the review GUI doesn't draw a highlighted "cut line" that was
+    # never actually cut).
+    assert not notch.is_closed_loop
     assert abs(notch.short_mm - 3.0) < 1e-6
     assert abs(notch.long_mm - 10.0) < 1e-6
     assert len(notch.member_edges) == 3  # single cap: entry wall, cap, exit wall
@@ -170,6 +179,8 @@ def test_find_features_container_covers_leftover_edges():
 
     notch = next(f for f in on_this_subpath if not f.is_container)
     container = next(f for f in on_this_subpath if f.is_container)
+    assert not notch.is_closed_loop  # open run along the boundary
+    assert container.is_closed_loop  # the subpath's own full closed outline
     info = next(i for i in infos if i.element_index == idx and i.subpath_index == 0)
     period = len(info.root_segments) - 1
     assert len(container.member_edges) == period - len(notch.member_edges)
@@ -189,6 +200,7 @@ def test_find_features_container_for_plain_panel_with_no_joints():
     container = _feature_by_id(elements, features, "multi", subpath_index=0)
     assert container.kind == "edge"
     assert container.is_container
+    assert container.is_closed_loop
     assert len(container.member_edges) == 4  # all four sides of the rectangle
 
 
@@ -232,6 +244,7 @@ def test_find_features_step_style_edge():
     step = _feature_by_id(elements, features, "stepboundary")
     assert step.kind == "edge"
     assert not step.is_container
+    assert not step.is_closed_loop
     assert abs(step.short_mm - 3.0) < 1e-6
     assert abs(step.long_mm - 10.0) < 1e-6
     assert step.member_edges == [3, 4, 5]
@@ -256,6 +269,7 @@ def test_custom_feature_recovers_a_known_notch():
     feature = joints.custom_feature(info, doc.scale_user_units_per_mm, (400, 600), (430, 600))
     assert feature is not None
     assert feature.kind == "edge"
+    assert not feature.is_closed_loop
     assert feature.member_edges == [2, 3, 4]
     assert abs(feature.short_mm - 3.0) < 1e-6
     assert abs(feature.long_mm - 10.0) < 1e-6

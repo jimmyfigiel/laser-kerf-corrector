@@ -109,7 +109,15 @@ PAGE = """<!doctype html>
   #overlay-svg polygon { cursor: pointer; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
   #overlay-svg polygon.ignored { fill: rgba(0,0,0,0); stroke: rgba(120,180,255,0.35); }
   #overlay-svg polygon.hole { fill: rgba(255,150,30,0.45); stroke: #ff9622; }
-  #overlay-svg polygon.edge { fill: rgba(60,150,255,0.45); stroke: #3c96ff; }
+  /* No fill -- an EDGE polygon traces the feature's own cut shape, which
+     for a notch/slot is exactly the void that's physically cut away. A
+     solid fill there paints over the real cut lines underneath and makes
+     an actually-open cutout look uncut/still-filled. Outline only, same
+     treatment the old dashed-only BOUNDARY style used, so the real
+     geometry underneath stays visible for review. Covers the leftover
+     container (which can span a whole panel) just as well, for the same
+     reason -- a big panel-wide fill would otherwise wash over everything. */
+  #overlay-svg polygon.edge { fill: rgba(0,0,0,0); stroke: #3c96ff; stroke-width: 2.5; }
   #overlay-svg polygon.ignored-merged { fill: rgba(0,0,0,0); stroke: rgba(60,150,255,0.55); stroke-dasharray: 2 3; }
   #overlay-svg polygon.hot { stroke: #ffd400; stroke-width: 3; }
   #sidebar { width: 360px; background: #262626; display: flex; flex-direction: column; border-left: 1px solid #444; overflow-y: auto; }

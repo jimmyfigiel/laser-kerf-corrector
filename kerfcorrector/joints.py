@@ -219,12 +219,21 @@ def find_features(
         whole_w_mm = (maxx - minx) / scale
         whole_h_mm = (maxy - miny) / scale
 
-        if max(whole_w_mm, whole_h_mm) <= max_feature_mm:
+        # Use the fitted (possibly rotated) rectangle's own long side for the
+        # size check, not the axis-aligned bounding box -- a diamond or any
+        # shape rotated off-axis has an axis-aligned bbox inflated well past
+        # its true size (up to sqrt(2) worse at 45 degrees), which would
+        # otherwise kick genuinely small rotated holes/tabs out of this
+        # branch and into the windowed search, where they just become an
+        # undifferentiated "boundary" despite being well within the cap.
+        whole_rect = geometry.fit_rectangle(info.poly)
+        whole_size_mm = whole_rect.long_len / scale if whole_rect else max(whole_w_mm, whole_h_mm)
+
+        if whole_size_mm <= max_feature_mm:
             kind = "hole" if info.depth % 2 == 1 else "tab"
             member_edges = list(range(1, period + 1))
-            rect = geometry.fit_rectangle(info.poly)
-            if rect:
-                short_mm, long_mm = rect.short_len / scale, rect.long_len / scale
+            if whole_rect:
+                short_mm, long_mm = whole_rect.short_len / scale, whole_rect.long_len / scale
             else:
                 short_mm, long_mm = min(whole_w_mm, whole_h_mm), max(whole_w_mm, whole_h_mm)
             features.append(Feature(

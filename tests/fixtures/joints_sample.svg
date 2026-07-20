@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="110mm" viewBox="0 0 1000 1100">
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="170mm" viewBox="0 0 1000 1700">
   <!-- One element bundling three subpaths, mimicking CorelDraw's compact export style:
        subpath 0 uses an absolute moveto (context, not a joint);
        subpath 1 is a 3mm x 12mm joint reached via a RELATIVE moveto from subpath 0's start;
@@ -33,4 +33,18 @@
        could not find at all (the two "matching" walls never overlap). -->
   <path class="cut" id="stepboundary" fill="none" stroke="black"
         d="M600,0 L800,0 L800,150 L830,150 L830,250 L800,250 L800,400 L600,400 Z" />
+
+  <!-- A diamond-shaped hole (a square rotated 45 degrees) nested inside a
+       big container. Its axis-aligned bounding box is 20x20mm, but its own
+       true side length (what find_features actually reports and compares
+       against max_feature_mm) is only about 14.14mm, since a rotated
+       shape's axis-aligned bbox is inflated relative to its real size (up
+       to sqrt(2) worse at 45 degrees). The whole-small-subpath size check
+       must compare against the fitted rectangle's size, not the inflated
+       axis-aligned bbox, or this genuinely-small diamond gets kicked into
+       the windowed search and mislabeled "boundary" instead of "hole". -->
+  <path class="cut" id="diamond-container" fill="none" stroke="black"
+        d="M0,1300 L300,1300 L300,1600 L0,1600 Z" />
+  <path class="cut" id="rotated-diamond" fill="none" stroke="black"
+        d="M150,1350 L250,1450 L150,1550 L50,1450 Z" />
 </svg>

@@ -89,11 +89,12 @@ venv\Scripts\python review_joints.py "plan.svg"
 
 This looks at every closed cut loop and finds three kinds of feature:
 
-- **Whole small subpath**: a closed subpath whose own bounding box is small
-  (under 20mm) is one whole feature — a **hole**
-  (orange, material removed) if its nesting depth is odd, a **tab** (blue,
-  solid) if even, e.g. a free-standing key/tab shape not attached to
-  anything else in the file.
+- **Whole small subpath**: a closed subpath whose own true size (its
+  fitted rectangle's long side — not the axis-aligned bounding box, which
+  overstates a rotated shape's size by up to sqrt(2)) is under 20mm is one
+  whole feature — a **hole** (orange, material removed) if its nesting
+  depth is odd, a **tab** (blue, solid) if even, e.g. a free-standing
+  key/tab shape not attached to anything else in the file.
 - **Windowed excursion**: for a bigger boundary (like a panel's outer
   silhouette), a short run of edges that locally bulges outward or dents
   inward — bounded on both sides by edges that are themselves parallel to

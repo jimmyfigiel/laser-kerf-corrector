@@ -180,6 +180,32 @@ def test_find_features_boundary_for_plain_panel_with_no_joints():
     assert len(boundary.member_edges) == 4  # all four sides of the rectangle
 
 
+def test_find_features_rotated_shape_uses_fitted_size_not_axis_aligned_bbox():
+    # "rotated-diamond" is a 45-degree-rotated square: its axis-aligned
+    # bounding box is 20x20mm, but its own true side length is ~14.14mm.
+    # The whole-small-subpath size check must compare max_feature_mm
+    # against the fitted (rotated) rectangle's size, not the inflated
+    # axis-aligned bbox -- otherwise this genuinely-small diamond gets
+    # kicked into the windowed search and mislabeled "boundary" instead of
+    # "hole", purely as a function of its rotation angle. Real-world
+    # finding: this is exactly what happened to several diamond cutouts in
+    # a decorative lattice panel, inconsistently labeled hole vs. boundary
+    # depending only on incidental rotation, not actual size.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    # max_feature_mm=15: under the true ~14.14mm side length, but well
+    # under the inflated 20mm axis-aligned bbox too -- so this only passes
+    # if the check is comparing against the fitted size.
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=15.0)
+
+    diamond = _feature_by_id(elements, features, "rotated-diamond")
+    assert diamond.kind == "hole"
+    assert abs(diamond.short_mm - 14.142) < 0.01
+    assert abs(diamond.long_mm - 14.142) < 0.01
+    assert len(diamond.member_edges) == 4  # whole subpath, not a windowed/boundary fragment
+
+
 def test_find_features_step_style_tab():
     # Regression test for the construction style the original edge-pair
     # detector could not find at all: one wall simply interrupted, stepping

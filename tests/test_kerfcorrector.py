@@ -87,7 +87,7 @@ def test_selection_excludes_filled_shapes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Selective joint correction (joints.py): HOLE / SLOT / TAB detection
+# Selective joint correction (joints.py): HOLE / EDGE detection
 #
 # The guiding principle: every corrected feature ends up at exactly its own
 # drawn size after cutting. This falls out of one uniform rule -- every
@@ -95,7 +95,13 @@ def test_selection_excludes_filled_shapes(tmp_path):
 # sign from the feature's own nesting depth parity -- so a dimension's
 # magnitude of change (half vs. full kerf) is just a consequence of how
 # many of its own boundary walls are actual member edges of the feature,
-# not something hand-coded per hole/slot/tab.
+# not something hand-coded per kind. `kind` itself is purely a review-GUI
+# label (HOLE for a standalone removed-material subpath, worth a careful
+# look; EDGE for everything else, since a tab/notch/plain-wall misclassified
+# as each other is geometrically harmless) -- `is_container` is the one
+# piece of detection metadata that still matters functionally, marking the
+# single leftover-boundary entry each subpath gets so the GUI's fold-back
+# logic can find it.
 # ---------------------------------------------------------------------------
 
 def _feature_by_id(elements, features, elem_id, subpath_index=0, kind=None):
@@ -106,7 +112,7 @@ def _feature_by_id(elements, features, elem_id, subpath_index=0, kind=None):
     )
 
 
-def test_find_features_whole_subpath_hole_and_tab():
+def test_find_features_whole_subpath_hole_and_edge():
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)
     infos = joints.analyze(doc, elements, tolerance_mm=0.02)
@@ -120,34 +126,37 @@ def test_find_features_whole_subpath_hole_and_tab():
     assert abs(joint.long_mm - 12.0) < 1e-6
 
     lone = _feature_by_id(elements, features, "lone")
-    assert lone.kind == "tab"  # standalone, not nested -> even depth
+    assert lone.kind == "edge"  # standalone, not nested -> even depth (solid tab)
     assert abs(lone.short_mm - 13.0) < 1e-6
     assert abs(lone.long_mm - 13.0) < 1e-6
 
     standalone_tab = _feature_by_id(elements, features, "tab")
-    assert standalone_tab.kind == "tab"
+    assert standalone_tab.kind == "edge"
     assert abs(standalone_tab.short_mm - 3.0) < 1e-6
     assert abs(standalone_tab.long_mm - 12.0) < 1e-6
 
 
-def test_find_features_embedded_slot():
+def test_find_features_embedded_notch_is_edge():
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)
     infos = joints.analyze(doc, elements, tolerance_mm=0.02)
     features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
 
     notch = _feature_by_id(elements, features, "edgenotch")
-    assert notch.kind == "slot"
+    assert notch.kind == "edge"
+    assert not notch.is_container
     assert abs(notch.short_mm - 3.0) < 1e-6
     assert abs(notch.long_mm - 10.0) < 1e-6
     assert len(notch.member_edges) == 3  # single cap: entry wall, cap, exit wall
 
 
-def test_find_features_boundary_covers_leftover_edges():
-    # The notch's own 3 edges are claimed by the SLOT feature above; every
+def test_find_features_container_covers_leftover_edges():
+    # The notch's own 3 edges are claimed by the EDGE feature above; every
     # other edge of "edgenotch"'s outer silhouette belongs to no detected
     # joint at all, but still needs the standard kerf offset or the panel
-    # comes out undersized -- that's exactly what the BOUNDARY feature is for.
+    # comes out undersized -- that's exactly what the CONTAINER feature is
+    # for. Both entries share kind "edge" (only `is_container` tells them
+    # apart), since which one is which makes no difference to correction.
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)
     infos = joints.analyze(doc, elements, tolerance_mm=0.02)
@@ -155,29 +164,32 @@ def test_find_features_boundary_covers_leftover_edges():
 
     idx = next(i for i, e in enumerate(elements) if e.get("id") == "edgenotch")
     on_this_subpath = [f for f in features if f.element_index == idx and f.subpath_index == 0]
-    assert len(on_this_subpath) == 2  # the slot, plus the leftover boundary
-    assert {f.kind for f in on_this_subpath} == {"slot", "boundary"}
+    assert len(on_this_subpath) == 2  # the notch, plus the leftover container
+    assert {f.kind for f in on_this_subpath} == {"edge"}
+    assert sorted(f.is_container for f in on_this_subpath) == [False, True]
 
-    slot = _feature_by_id(elements, features, "edgenotch", kind="slot")
-    boundary = _feature_by_id(elements, features, "edgenotch", kind="boundary")
+    notch = next(f for f in on_this_subpath if not f.is_container)
+    container = next(f for f in on_this_subpath if f.is_container)
     info = next(i for i in infos if i.element_index == idx and i.subpath_index == 0)
     period = len(info.root_segments) - 1
-    assert len(boundary.member_edges) == period - len(slot.member_edges)
-    assert set(boundary.member_edges).isdisjoint(slot.member_edges)
+    assert len(container.member_edges) == period - len(notch.member_edges)
+    assert set(container.member_edges).isdisjoint(notch.member_edges)
 
 
-def test_find_features_boundary_for_plain_panel_with_no_joints():
+def test_find_features_container_for_plain_panel_with_no_joints():
     # "multi" subpath 0 is a plain 20x15mm rectangle with no notches or
     # tabs of its own -- it should still come back as one whole-perimeter
-    # BOUNDARY feature (not silently skipped) so it still gets corrected.
+    # EDGE feature marked `is_container` (not silently skipped) so it
+    # still gets corrected.
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)
     infos = joints.analyze(doc, elements, tolerance_mm=0.02)
     features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
 
-    boundary = _feature_by_id(elements, features, "multi", subpath_index=0)
-    assert boundary.kind == "boundary"
-    assert len(boundary.member_edges) == 4  # all four sides of the rectangle
+    container = _feature_by_id(elements, features, "multi", subpath_index=0)
+    assert container.kind == "edge"
+    assert container.is_container
+    assert len(container.member_edges) == 4  # all four sides of the rectangle
 
 
 def test_find_features_rotated_shape_uses_fitted_size_not_axis_aligned_bbox():
@@ -186,11 +198,11 @@ def test_find_features_rotated_shape_uses_fitted_size_not_axis_aligned_bbox():
     # The whole-small-subpath size check must compare max_feature_mm
     # against the fitted (rotated) rectangle's size, not the inflated
     # axis-aligned bbox -- otherwise this genuinely-small diamond gets
-    # kicked into the windowed search and mislabeled "boundary" instead of
+    # kicked into the windowed search and mislabeled "edge" instead of
     # "hole", purely as a function of its rotation angle. Real-world
     # finding: this is exactly what happened to several diamond cutouts in
     # a decorative lattice panel, inconsistently labeled hole vs. boundary
-    # depending only on incidental rotation, not actual size.
+    # (now edge) depending only on incidental rotation, not actual size.
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)
     infos = joints.analyze(doc, elements, tolerance_mm=0.02)
@@ -206,7 +218,7 @@ def test_find_features_rotated_shape_uses_fitted_size_not_axis_aligned_bbox():
     assert len(diamond.member_edges) == 4  # whole subpath, not a windowed/boundary fragment
 
 
-def test_find_features_step_style_tab():
+def test_find_features_step_style_edge():
     # Regression test for the construction style the original edge-pair
     # detector could not find at all: one wall simply interrupted, stepping
     # out then back in, rather than two full-length parallel walls joined by
@@ -218,7 +230,8 @@ def test_find_features_step_style_tab():
     features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
 
     step = _feature_by_id(elements, features, "stepboundary")
-    assert step.kind == "tab"  # bulges outward -> convex -> solid material
+    assert step.kind == "edge"
+    assert not step.is_container
     assert abs(step.short_mm - 3.0) < 1e-6
     assert abs(step.long_mm - 10.0) < 1e-6
     assert step.member_edges == [3, 4, 5]
@@ -228,8 +241,8 @@ def test_find_features_step_style_tab():
 # Manually adding a feature the auto-detector missed (joints.custom_feature)
 # ---------------------------------------------------------------------------
 
-def test_custom_feature_recovers_a_known_slot():
-    # A user clicking the two outer corners of "edgenotch"'s slot (vertex 1
+def test_custom_feature_recovers_a_known_notch():
+    # A user clicking the two outer corners of "edgenotch"'s notch (vertex 1
     # at (400,600) and vertex 4 at (430,600)) should recover exactly the
     # same feature find_features already detects automatically for it --
     # custom_feature just skips the parallel-neighbor prefilter that a
@@ -242,7 +255,7 @@ def test_custom_feature_recovers_a_known_slot():
 
     feature = joints.custom_feature(info, doc.scale_user_units_per_mm, (400, 600), (430, 600))
     assert feature is not None
-    assert feature.kind == "slot"
+    assert feature.kind == "edge"
     assert feature.member_edges == [2, 3, 4]
     assert abs(feature.short_mm - 3.0) < 1e-6
     assert abs(feature.long_mm - 10.0) < 1e-6
@@ -250,11 +263,10 @@ def test_custom_feature_recovers_a_known_slot():
 
 def test_custom_feature_click_order_is_invariant():
     # Clicking near vertex 4 first and vertex 1 second (reversed order) must
-    # give the IDENTICAL result, not just the same edge set -- member_edges
-    # order and (critically) the tab/slot classification both derive from
-    # the traced point sequence's direction, so a naive implementation can
-    # silently flip concave/convex depending purely on click order. This is
-    # a regression test for exactly that bug.
+    # give the IDENTICAL member_edges, not just the same edge set -- a naive
+    # implementation can silently reverse the traced point sequence and
+    # produce a differently-ordered (or wrongly-sized) result depending
+    # purely on click order. This is a regression test for exactly that bug.
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)
     infos = joints.analyze(doc, elements, tolerance_mm=0.02)
@@ -264,7 +276,7 @@ def test_custom_feature_click_order_is_invariant():
     forward = joints.custom_feature(info, doc.scale_user_units_per_mm, (400, 600), (430, 600))
     reversed_ = joints.custom_feature(info, doc.scale_user_units_per_mm, (430, 600), (400, 600))
     assert forward.member_edges == reversed_.member_edges == [2, 3, 4]
-    assert forward.kind == reversed_.kind == "slot"
+    assert forward.kind == reversed_.kind == "edge"
     assert abs(forward.short_mm - 3.0) < 1e-6
     assert abs(forward.long_mm - 10.0) < 1e-6
 
@@ -306,7 +318,7 @@ def test_apply_manifest_hole_both_dims_shrink_full_kerf(tmp_path):
     assert abs((maxy - miny) / scale - 2.0) < 1e-6   # 3.0 - 1.0
 
 
-def test_apply_manifest_tab_both_dims_grow_full_kerf(tmp_path):
+def test_apply_manifest_edge_both_dims_grow_full_kerf(tmp_path):
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)
     infos = joints.analyze(doc, elements, tolerance_mm=0.02)
@@ -329,7 +341,7 @@ def test_apply_manifest_tab_both_dims_grow_full_kerf(tmp_path):
     assert abs((maxy - miny) / scale - 14.0) < 1e-6
 
 
-def test_apply_manifest_embedded_slot_asymmetric_kerf(tmp_path):
+def test_apply_manifest_embedded_notch_asymmetric_kerf(tmp_path):
     # A slot capped at only one end: its two walls are both independent
     # cuts (width narrows by the full kerf), but its length has only one
     # real cut line closing it off -- the other end is just the rest of
@@ -355,7 +367,7 @@ def test_apply_manifest_embedded_slot_asymmetric_kerf(tmp_path):
     assert abs(after.long_mm - 9.5) < 1e-6    # 10.0 - 0.5 (half kerf, one cap)
 
 
-def test_apply_manifest_step_tab_asymmetric_kerf(tmp_path):
+def test_apply_manifest_step_edge_asymmetric_kerf(tmp_path):
     # The mirror image of the embedded-slot case: a step-style tab has
     # only one wall that's a member edge (its own outer face), so width
     # grows by half the kerf, while both perpendicular caps ARE members,
@@ -381,13 +393,13 @@ def test_apply_manifest_step_tab_asymmetric_kerf(tmp_path):
     assert abs(after.long_mm - 11.0) < 1e-6   # 10.0 + 1.0 (full kerf, both caps)
 
 
-def test_apply_manifest_boundary_grows_outer_silhouette_by_full_kerf(tmp_path):
-    # This is what motivated the BOUNDARY feature: correcting only the
-    # detected slot left "edgenotch"'s own outer silhouette untouched, so
-    # the finished panel would come out undersized by a full kerf even
-    # though its one joint was corrected perfectly. Applying both the slot
-    # AND the boundary feature (as the review GUI does by default, since
-    # BOUNDARY defaults to selected like any other auto-detected feature)
+def test_apply_manifest_container_grows_outer_silhouette_by_full_kerf(tmp_path):
+    # This is what motivated the leftover CONTAINER feature: correcting
+    # only the detected notch left "edgenotch"'s own outer silhouette
+    # untouched, so the finished panel would come out undersized by a full
+    # kerf even though its one joint was corrected perfectly. Applying both
+    # the notch AND the container feature (as the review GUI does by
+    # default, since every auto-detected feature defaults to selected)
     # should grow the panel's overall footprint by the full kerf on both
     # dimensions, exactly like whole-file mode does for a plain boundary.
     doc = svgio.load(JOINTS_FIXTURE)
@@ -466,7 +478,7 @@ def test_apply_manifest_leaves_unlisted_elements_untouched(tmp_path):
     elements = cli.select_elements(doc, None, include_fill=False)
     lone_idx = next(i for i, e in enumerate(elements) if e.get("id") == "lone")
 
-    manifest = [{"element_index": lone_idx, "subpath_index": 0, "kind": "tab", "member_edges": [1, 2, 3, 4]}]
+    manifest = [{"element_index": lone_idx, "subpath_index": 0, "kind": "edge", "member_edges": [1, 2, 3, 4]}]
     out_path = str(tmp_path / "out.svg")
     stats = joints.apply_manifest(doc, elements, manifest, kerf_mm=0.2, tolerance_mm=0.02)
     svgio.save(doc, out_path)

@@ -17,7 +17,7 @@ Opens a browser window at a small hub page listing the available tools
 added later). Open **Laser Kerf Corrector**, upload an SVG (drag-and-drop
 or click to choose — nothing is read from or written to disk on the
 server's side, it all stays in memory for your session), then review the
-auto-detected holes/slots/tabs/boundary and apply. The result comes back
+auto-detected holes/edges and apply. The result comes back
 as a download, not a file written next to the input. `Ctrl+C` in the
 terminal stops the local server; pass `--port` if 5000 is taken.
 
@@ -33,15 +33,24 @@ processing, or if you'd rather not use the browser GUI at all.
 ## How it works
 
 Every corrected feature ends up at *exactly its own drawn dimensions* after
-cutting. The tool classifies every edge of every closed cut loop into one
-of four kinds — **hole**, **slot**, **tab**, or **boundary** (see the
-section below) — and shifts each edge by half the kerf along its own
-outward normal: outward for solid material (grows a tab or a panel's
-boundary, since cutting shrinks it), inward for removed material (shrinks
-a hole or a slot, since cutting enlarges it). Direction is derived from
-each subpath's own winding order, not a centroid heuristic, so it's
-correct even for concave features like a slot, where "outward" points
-back toward the opening rather than deeper into the material.
+cutting. Every edge of every closed cut loop shifts by half the kerf along
+its own outward normal: outward for solid material (grows a tab or a
+panel's own boundary, since cutting shrinks it), inward for removed
+material (shrinks a hole or a notch, since cutting enlarges it). Direction
+is derived from each subpath's own winding order, not a centroid
+heuristic, so it's correct even for concave features like a notch, where
+"outward" points back toward the opening rather than deeper into the
+material.
+
+The tool labels every detected feature **hole** or **edge** for review
+(see the section below), but that label is purely a review-screen aid —
+correction direction comes entirely from the subpath's own nesting depth,
+recomputed independently at apply time, not from the label itself.
+Relabeling (or even misdetecting) a feature never changes the output
+geometry; the label only exists so a hole — the one case worth a careful
+look, since a missed or misplaced one is visibly wrong — stands out from
+everything else (tab, notch, or a boundary's own plain wall), which are
+all handled identically regardless of which one they are.
 
 This is computed purely from geometry (containment, edge adjacency), so it
 works whether a part's holes are separate `<path>`/`<polygon>` siblings or
@@ -87,43 +96,50 @@ Step 1 — auto-detect candidates and review them in a browser:
 venv\Scripts\python review_joints.py "plan.svg"
 ```
 
-This looks at every closed cut loop and finds three kinds of feature:
+This looks at every closed cut loop and runs three detection passes, then
+labels the result **hole** or **edge** for review:
 
 - **Whole small subpath**: a closed subpath whose own true size (its
   fitted rectangle's long side — not the axis-aligned bounding box, which
   overstates a rotated shape's size by up to sqrt(2)) is under 20mm is one
   whole feature — a **hole** (orange, material removed) if its nesting
-  depth is odd, a **tab** (blue, solid) if even, e.g. a free-standing
+  depth is odd, an **edge** (blue, solid) if even, e.g. a free-standing
   key/tab shape not attached to anything else in the file.
 - **Windowed excursion**: for a bigger boundary (like a panel's outer
   silhouette), a short run of edges that locally bulges outward or dents
   inward — bounded on both sides by edges that are themselves parallel to
-  each other — is a **tab** (bulges out, adds material) or a **slot**
-  (pink, dents in, removes material) embedded in that boundary. This finds
-  a feature however it's constructed: two long parallel walls joined by a
-  perpendicular cap (common in CorelDraw-style exports), or a simple
-  orthogonal step (common in Inkscape-style exports) — both are just "a
-  short window bounded by parallel edges" as far as the search cares.
-- **Boundary** (dashed green): whatever's left of a big boundary once its
+  each other — is an **edge** feature embedded in that boundary, whether it
+  bulges out (a tab, adds material) or dents in (a notch, removes
+  material). This finds a feature however it's constructed: two long
+  parallel walls joined by a perpendicular cap (common in CorelDraw-style
+  exports), or a simple orthogonal step (common in Inkscape-style exports)
+  — both are just "a short window bounded by parallel edges" as far as the
+  search cares.
+- **Leftover container**: whatever's left of a big boundary once its
   windowed features are carved out — the plain, joint-free walls of a
   panel's outer silhouette, or of a big hole. Left uncorrected, these
   edges would leave the finished part undersized (or a big hole oversized)
   by the kerf even with every joint on it corrected perfectly, since
   "correct each joint" and "correct the part's own overall size" are
-  separate concerns. It's auto-detected and selected by default — a plain
-  rectangular panel with no joints at all still comes back as one boundary
-  feature, so it still gets corrected.
+  separate concerns. It's also labeled **edge**, auto-detected and
+  selected by default — a plain rectangular panel with no joints at all
+  still comes back as one container feature, so it still gets corrected.
+
+Only the first pass can produce a **hole** — everything else, including
+the tab/notch distinction and the leftover container, is folded into the
+single **edge** label, since all of it gets the identical kerf/2-per-edge
+offset regardless of the exact shape. Hole is worth a careful look in
+review because a missed or misplaced one is visibly wrong; the rest isn't,
+so there's nothing to gain from splitting it further.
 
 A browser window opens showing the sheet with the detected features
 overlaid and color-coded (scroll to zoom, drag to pan). The sidebar lists
 every feature with its detected size and a button to cycle its
-classification through `ignored` / `hole` / `slot` / `tab` (a detected
-joint's own boundary entry additionally offers `boundary`, but that's not
-offered on ordinary hole/slot/tab entries — see below). Click any shape
+classification through `ignored` / `hole` / `edge`. Click any shape
 directly on the canvas to cycle it the same way, including ones never
 auto-suggested — clicking always hits the smallest feature under the
-pointer, so a small slot nested inside a big boundary polygon stays
-individually clickable rather than always selecting the boundary. The
+pointer, so a small notch nested inside a big container polygon stays
+individually clickable rather than always selecting the container. The
 selected shape gets a bright yellow outline, and clicking a shape also
 highlights and scrolls to its row in the sidebar; clicking a sidebar row
 pans/zooms the canvas to that shape, in both directions. Click empty
@@ -131,19 +147,15 @@ canvas space, or press Escape, to clear the selection highlight.
 
 Marking a false-detection `ignored` doesn't just leave its edges untouched
 — that would produce a visible step where the rest of the boundary shifts
-around it. Instead its edges fold back into that piece's boundary entry
-(and get pulled back out if you un-ignore it), so a misidentified tab or
-slot ends up corrected as ordinary boundary, exactly as if it had never
-been separately detected — shown as a fine dashed green outline (distinct
-from the boundary polygon's own coarser dash) so it's clear it's still
-being corrected rather than having simply vanished. For the same reason,
-`boundary` isn't offered as a manual target on a hole/slot/tab entry: since
-it would just draw a second, overlapping boundary-styled shape rather than
-actually merging anything, `ignored` is the correct way to say "treat this
-as ordinary boundary."
+around it. Instead its edges fold back into that piece's own leftover
+container entry (and get pulled back out if you un-ignore it), so an
+ignored tab or notch ends up corrected as an ordinary edge, exactly as if
+it had never been separately detected — shown as a fine dashed blue
+outline (distinct from a real edge polygon's solid fill) so it's clear
+it's still being corrected rather than having simply vanished.
 
 If a real joint wasn't auto-detected at all (its edges just became part of
-the surrounding boundary), click **+ Add missed feature**, then click the
+the surrounding container), click **+ Add missed feature**, then click the
 joint's two outer corners directly on the canvas. This is most often needed
 for a finger-joint tooth positioned right at a corner of a panel, where the
 windowed search's core assumption — that the edges immediately before and
@@ -151,9 +163,9 @@ after a local excursion are parallel to each other — doesn't hold, since
 those two edges are actually the panel's two *different* sides meeting at
 that corner. Each click snaps to the nearest actual vertex of whichever
 piece you clicked; the run of edges between your two clicks (whichever way
-around the loop is shorter) becomes a new feature, classified the same way
-auto-detected ones are, and its edges are removed from that piece's
-boundary entry so they aren't corrected twice.
+around the loop is shorter) becomes a new **edge** feature, and its edges
+are removed from that piece's container entry so they aren't corrected
+twice.
 
 **Undo** (button, or Ctrl/Cmd+Z) steps back through classification changes
 and added features one at a time, all the way back to the original
@@ -175,19 +187,19 @@ if solid material, inward if material removed). Shared vertices between
 adjacent member edges naturally accumulate both edges' shifts, which is
 mathematically the same as a mitre-join offset of the whole feature. In
 practice this means a dimension bounded by two independent member walls
-(e.g. a standalone hole's width, or a slot's width where both side walls
+(e.g. a standalone hole's width, or a notch's width where both side walls
 are cut edges) moves by the *full* kerf, while a dimension bounded by only
-one member wall — the other side being unrelated boundary, like a slot's
+one member wall — the other side being unrelated boundary, like a notch's
 open end or a step-style tab's uncut face — moves by *half* the kerf. This
 falls out automatically from the per-edge-shift mechanism; nothing is
-hand-coded per hole/slot/tab or per dimension.
+hand-coded per kind or per dimension.
 
 Everything else in the file, including *the rest of a much bigger boundary
 a feature happens to be embedded in*, is re-emitted from its original
 segments — curves are preserved, not flattened, since there's no need to
 touch geometry that isn't being corrected. Direction (outward vs. inward)
 is derived from each subpath's own winding order, which is correct for
-concave features (like a slot) where a naive "away from centroid"
+concave features (like a notch) where a naive "away from centroid"
 heuristic gives the wrong answer.
 
 `--manifest` overrides the manifest path if you don't want the `<input>.joints.json`
@@ -202,7 +214,7 @@ internally rather than exposed as flags, since they only affect how edges
 are *grouped and labeled* for review (and thus what you can individually
 mark `ignored`) — not the correction itself. A joint too large to get its
 own detected box still gets corrected: it just falls into the surrounding
-boundary feature instead, which applies the identical per-edge kerf/2
+leftover container instead, which applies the identical per-edge kerf/2
 shift.
 
 ## Deploying
@@ -278,7 +290,7 @@ card on the landing page. No other file needs to change.
   same wall) fails that assumption and won't get its own labeled entry —
   in practice this is the single most common reason a real joint goes
   undetected. It's still corrected either way (its edges fall into the
-  surrounding boundary feature, same kerf/2-per-edge shift), just without
+  surrounding leftover container, same kerf/2-per-edge shift), just without
   individual review; use **+ Add missed feature** to give it its own entry.
   A joint built from an unusually elaborate connecting detail (e.g. several
   chamfer segments, more edges than the search's fixed window looks at) can
@@ -286,10 +298,10 @@ card on the landing page. No other file needs to change.
 - The review GUI needs a browser; there's no headless/scripted way to author
   a manifest other than hand-writing the JSON (see the format written by
   `review_joints.py` — a list of `{element_index, subpath_index, kind,
-  member_edges}` objects, where `kind` is `"hole"`, `"slot"`, `"tab"`, or
-  `"boundary"` and `member_edges` are the vertex indices of that feature's
-  own edges). An unrecognized `kind` or an empty `member_edges` is skipped
-  with a warning rather than guessed.
+  member_edges}` objects, where `kind` is `"hole"` or `"edge"` and
+  `member_edges` are the vertex indices of that feature's own edges). An
+  unrecognized `kind` or an empty `member_edges` is skipped with a warning
+  rather than guessed.
 
 ## Tests
 

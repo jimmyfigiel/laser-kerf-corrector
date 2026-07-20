@@ -3,8 +3,8 @@
 Two-step workflow (see review_joints.py / apply_joints.py, or app.py for the
 combined GUI):
 
-1. Auto-detect HOLE / SLOT / TAB features and let a human verify/adjust/add
-   them in a browser GUI. The result is a small JSON manifest naming exactly
+1. Auto-detect HOLE / EDGE features and let a human verify/adjust/add them
+   in a browser GUI. The result is a small JSON manifest naming exactly
    which edges to correct.
 2. Apply the manifest: only the specific vertices belonging to an accepted
    feature are moved; every other vertex -- including the rest of a much
@@ -12,50 +12,46 @@ combined GUI):
    its original segments untouched, curves included.
 
 The guiding principle is simple: every corrected piece should come out at
-*exactly its own drawn dimensions* after cutting. Solid material (a TAB)
-loses width to the kerf, so it's drawn oversized by half the kerf on every
-edge. Removed material (a HOLE or a SLOT notched into a boundary) gains
-size from the kerf, so it's drawn undersized by half the kerf on every
-edge. Both are the same operation -- offset every edge of the feature
-outward or inward by kerf/2, sign taken from the feature's own nesting
-depth parity -- so there's no special-casing between them, or between a
-feature's two dimensions. (An earlier version of this tool tried to leave
-one "material thickness" dimension untouched; that turned out to be wrong
-in general and has been removed. Every dimension is corrected to match
-what's drawn.)
+*exactly its own drawn dimensions* after cutting. Every member edge of
+every feature shifts by kerf/2 along its own outward normal, sign taken
+from the feature's own nesting depth parity (inward/shrink if material is
+removed -- odd depth -- outward/grow if solid -- even depth). That's the
+whole correction rule: it applies identically no matter what kind of
+feature the edge belongs to, so there's no special-casing between a
+feature's two dimensions, or between features of different kinds.
 
-Detection has three cases:
+Because of that, a feature's *kind* is purely a human-facing label for the
+review GUI -- it plays no part in the correction math. Only two kinds are
+exposed:
 
-- HOLE / standalone TAB: a closed subpath whose own bounding box is small
-  is treated as one whole feature -- HOLE if its nesting depth is odd
-  (material removed), TAB if even (solid, e.g. a free-standing key/tab
-  shape not attached to anything else in the file).
-- SLOT / embedded TAB: for a big boundary (like a panel's outer
-  silhouette), slide a window of 1..N consecutive edges around it. Where
-  the edge immediately before the window and the edge immediately after
-  it are parallel to each other, the window is a local excursion from an
-  otherwise-straight run -- fit a rectangle to it, and if the size is
-  plausible, it's a feature: TAB if it bulges outward (convex, adds
-  material), SLOT if it dents inward (concave, removes material). This
-  works whether the excursion is drawn as two long parallel walls with a
-  short perpendicular cap (common in CorelDraw-style exports) or as a
-  simple orthogonal step (common in Inkscape-style exports) -- both are
-  just "a window bounded by parallel edges" as far as this search cares.
-- BOUNDARY: a big boundary's own edges that aren't claimed by any SLOT/TAB
-  above -- e.g. the plain, joint-free walls of a panel's outer silhouette.
-  Left uncorrected, these edges would leave the finished part undersized
-  (or a big hole oversized) by the kerf even though every joint on it was
-  handled correctly, since "correct every joint" and "correct the part's
-  own overall size" are separate concerns. This is the same offset every
-  other feature gets -- half the kerf along each edge's own outward
-  normal, sign from the subpath's own nesting depth -- just applied to
-  whatever's left of the loop, so a plain rectangular panel with no joints
-  at all still comes out to size.
+- HOLE: a closed subpath whose own bounding box is small is treated as one
+  whole feature, and flagged HOLE if its nesting depth is odd (material
+  removed -- an actual hole in the finished part). This is the one case
+  worth double-checking in review, since a missed or misplaced hole is
+  visibly wrong; everything else below gets identical treatment regardless
+  of its exact shape.
+- EDGE: everything else -- a standalone small subpath with even depth (a
+  free-standing tab), a local excursion (bump or notch) found by sliding a
+  window of 1..N consecutive edges around a bigger boundary looking for a
+  parallel-walled run, and the plain leftover walls of that boundary once
+  every excursion is claimed. All three are corrected the same offset, so
+  splitting them into separate labels added review-screen detail (tab vs.
+  slot vs. boundary) without changing any output geometry.
+
+Detection still runs the same three passes internally (whole small
+subpath, windowed excursion, leftover boundary) since that's what actually
+finds the edges to correct -- `kind` just collapses the result down to
+HOLE / EDGE afterward. One implementation detail survives into the
+payload: `is_container` marks the single leftover-boundary entry each
+subpath gets (if any), since a windowed EDGE feature that's ignored needs
+to fold its edges back into that specific sibling or the finished part
+gets a gap right where the ignored feature was (see kerf_tool.py's
+`boundarySiblingIdx`).
 
 Outward/inward direction is derived from each subpath's own winding order
 (`geometry.polygon_signed_area` / `edge_outward_normal`), not a centroid
 heuristic -- centroid-based "outward" is wrong for a concave feature like
-a slot, where the true outward direction points back toward the opening,
+a notch, where the true outward direction points back toward the opening,
 not deeper into the material.
 """
 
@@ -160,18 +156,19 @@ def analyze(doc: svgio.Document, elements, tolerance_mm: float) -> list[SubpathI
 
 
 # ---------------------------------------------------------------------------
-# Feature detection: HOLE / SLOT / TAB
+# Feature detection: HOLE / EDGE
 # ---------------------------------------------------------------------------
 
 @dataclass
 class Feature:
     element_index: int
     subpath_index: int
-    kind: str  # 'hole' | 'slot' | 'tab' | 'boundary'
+    kind: str  # 'hole' | 'edge'
     member_edges: list[int]  # vertex_index values of edges to correct
     short_mm: float
     long_mm: float
     render_rect: list[tuple[float, float]]  # root space, for GUI
+    is_container: bool = False  # the subpath's own leftover-boundary entry, if any
 
 
 def _cyclic_add(v: int, k: int, period: int) -> int:
@@ -203,8 +200,8 @@ def find_features(
     min_rect_ratio: float = 0.7,
     angle_tol_cos: float = 0.05,
 ) -> list[Feature]:
-    """Detect HOLE/SLOT/TAB candidates. See module docstring for the two
-    detection cases (whole small subpath vs. windowed excursion)."""
+    """Detect HOLE/EDGE candidates. See module docstring for the three
+    detection passes (whole small subpath, windowed excursion, leftover)."""
     features: list[Feature] = []
 
     for info in infos:
@@ -230,7 +227,7 @@ def find_features(
         whole_size_mm = whole_rect.long_len / scale if whole_rect else max(whole_w_mm, whole_h_mm)
 
         if whole_size_mm <= max_feature_mm:
-            kind = "hole" if info.depth % 2 == 1 else "tab"
+            kind = "hole" if info.depth % 2 == 1 else "edge"
             member_edges = list(range(1, period + 1))
             if whole_rect:
                 short_mm, long_mm = whole_rect.short_len / scale, whole_rect.long_len / scale
@@ -279,19 +276,9 @@ def find_features(
                 continue
             window_edges, short_mm, long_mm, pts = match
 
-            # Classify convex (tab, bulges outward) vs concave (slot, dents
-            # inward): compare the window's own interior points to the
-            # straight line that would connect its two boundary points.
-            baseline_dir = geometry._unit(geometry._sub(pts[-1], pts[0]))
-            outward = geometry.edge_outward_normal(info.signed_area, baseline_dir)
-            interior = pts[1:-1] or pts
-            avg = (sum(p[0] for p in interior) / len(interior), sum(p[1] for p in interior) / len(interior))
-            to_avg = geometry._sub(avg, pts[0])
-            kind = "tab" if geometry._dot(outward, to_avg) > 0 else "slot"
-
             consumed.update(window_edges)
             features.append(Feature(
-                info.element_index, info.subpath_index, kind, window_edges,
+                info.element_index, info.subpath_index, "edge", window_edges,
                 short_mm, long_mm, pts,
             ))
 
@@ -303,8 +290,9 @@ def find_features(
             else:
                 short_mm, long_mm = min(whole_w_mm, whole_h_mm), max(whole_w_mm, whole_h_mm)
             features.append(Feature(
-                info.element_index, info.subpath_index, "boundary", leftover,
+                info.element_index, info.subpath_index, "edge", leftover,
                 short_mm, long_mm, geometry.polygon_to_points(info.poly),
+                is_container=True,
             ))
 
     return features
@@ -355,9 +343,8 @@ def custom_feature(
 
     forward, backward = vertex_seq(1), vertex_seq(-1)
     # Always end up with `seq` walking the polygon's own forward winding
-    # direction (ascending cyclic index), whichever click came first -- the
-    # tab/slot classification below depends on point order, and this is
-    # what keeps it (and member_edges) invariant to click order.
+    # direction (ascending cyclic index), whichever click came first -- this
+    # is what keeps member_edges invariant to click order.
     seq = forward if len(forward) <= len(backward) else list(reversed(backward))
     if len(seq) < 2 or len(seq) > period:
         return None
@@ -377,14 +364,9 @@ def custom_feature(
         return None
     short_mm, long_mm = rect.short_len / scale, rect.long_len / scale
 
-    baseline_dir = geometry._unit(geometry._sub(pts[-1], pts[0]))
-    outward = geometry.edge_outward_normal(info.signed_area, baseline_dir)
-    interior = pts[1:-1] or pts
-    avg = (sum(p[0] for p in interior) / len(interior), sum(p[1] for p in interior) / len(interior))
-    to_avg = geometry._sub(avg, pts[0])
-    kind = "tab" if geometry._dot(outward, to_avg) > 0 else "slot"
-
-    return Feature(info.element_index, info.subpath_index, kind, window_edges, short_mm, long_mm, pts)
+    # A manually-added feature is, by construction, a windowed excursion on
+    # an existing boundary (never the whole-subpath case) -- always EDGE.
+    return Feature(info.element_index, info.subpath_index, "edge", window_edges, short_mm, long_mm, pts)
 
 
 def to_payload(features: list[Feature]) -> list[dict]:
@@ -397,6 +379,7 @@ def to_payload(features: list[Feature]) -> list[dict]:
             "element_index": f.element_index,
             "subpath_index": f.subpath_index,
             "kind": f.kind,
+            "is_container": f.is_container,
             "member_edges": list(f.member_edges),
             "short_mm": round(f.short_mm, 4),
             "long_mm": round(f.long_mm, 4),
@@ -477,7 +460,7 @@ def apply_manifest(
         if info is None:
             stats.warnings.append(f"{label}: element/subpath not found, skipped")
             continue
-        if entry.get("kind") not in ("hole", "slot", "tab", "boundary"):
+        if entry.get("kind") not in ("hole", "edge"):
             stats.warnings.append(f"{label}: unknown kind {entry.get('kind')!r}, skipped")
             continue
         member_edges = entry.get("member_edges") or []

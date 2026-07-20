@@ -1,4 +1,4 @@
-"""Local Flask app for reviewing auto-detected HOLE/SLOT/TAB features in a
+"""Local Flask app for reviewing auto-detected HOLE/EDGE features in a
 browser: verify/reclassify/remove suggestions, save a manifest for
 apply_joints.py to consume."""
 
@@ -38,10 +38,8 @@ PAGE_TEMPLATE = """<!doctype html>
   #overlay-svg polygon { cursor: pointer; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
   #overlay-svg polygon.ignored { fill: rgba(0,0,0,0); stroke: rgba(120,180,255,0.35); }
   #overlay-svg polygon.hole { fill: rgba(255,150,30,0.45); stroke: #ff9622; }
-  #overlay-svg polygon.slot { fill: rgba(233,30,140,0.45); stroke: #e91e8c; }
-  #overlay-svg polygon.tab { fill: rgba(60,150,255,0.45); stroke: #3c96ff; }
-  #overlay-svg polygon.boundary { fill: rgba(0,0,0,0); stroke: #43a047; stroke-dasharray: 6 4; }
-  #overlay-svg polygon.ignored-merged { fill: rgba(0,0,0,0); stroke: rgba(67,160,71,0.55); stroke-dasharray: 2 3; }
+  #overlay-svg polygon.edge { fill: rgba(60,150,255,0.45); stroke: #3c96ff; }
+  #overlay-svg polygon.ignored-merged { fill: rgba(0,0,0,0); stroke: rgba(60,150,255,0.55); stroke-dasharray: 2 3; }
   #overlay-svg polygon.hot { stroke: #ffd400; stroke-width: 3; }
   .click-marker { fill: #fff; stroke: #ff3355; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
   #add-mode.active { background: #b3701f; }
@@ -64,9 +62,7 @@ PAGE_TEMPLATE = """<!doctype html>
   .row .dims { color: #aaa; }
   .row .cls-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-left: 6px; }
   .cls-badge.hole { background: #ff9622; color: #201400; }
-  .cls-badge.slot { background: #e91e8c; color: #250014; }
-  .cls-badge.tab { background: #3c96ff; color: #001428; }
-  .cls-badge.boundary { background: #43a047; color: #06180a; }
+  .cls-badge.edge { background: #3c96ff; color: #001428; }
   .cls-badge.ignored { background: #555; color: #ccc; }
   .row-controls { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
   .row-controls button { font-size: 11px; padding: 3px 8px; border: 1px solid #555; background: #333; color: #ddd; border-radius: 3px; cursor: pointer; }
@@ -88,16 +84,14 @@ PAGE_TEMPLATE = """<!doctype html>
     <h1>Joint review</h1>
     <div class="sub">Auto-detected features on the left canvas. Every one
     is corrected the same way: it ends up at exactly its own drawn size
-    after cutting. Orange = <b>hole</b> (material removed, standalone).
-    Pink = <b>slot</b> (a notch cut into a boundary). Blue = <b>tab</b>
-    (solid material, a bump on a boundary or a free-standing piece).
-    Dashed green = <b>boundary</b> (the rest of a panel's outer silhouette,
-    or a big hole, with no joints of its own — still needs the same
-    kerf offset or the finished part comes out undersized). Click any
-    shape on the canvas to cycle ignored/hole/slot/tab/boundary. If a
-    joint wasn't auto-detected (it stayed part of a boundary), use
-    "+ Add missed feature" and click its two corners directly.
-    Ctrl/Cmd+Z undoes the last change.</div>
+    after cutting. Orange = <b>hole</b> (material removed — worth a
+    careful look, since a missed or misplaced hole is visibly wrong).
+    Blue = <b>edge</b> (everything else: a solid tab, a notch, or a
+    boundary's own plain walls — all handled identically, so it doesn't
+    matter which one it is). Click any shape on the canvas to cycle
+    ignored/hole/edge. If a joint wasn't auto-detected (it stayed part
+    of a boundary), use "+ Add missed feature" and click its two corners
+    directly. Ctrl/Cmd+Z undoes the last change.</div>
     <div id="controls">
       <button id="save-btn">Save review &amp; finish</button>
       <button id="reset-view">Reset view</button>
@@ -113,7 +107,7 @@ PAGE_TEMPLATE = """<!doctype html>
 <script id="data" type="application/json">__DATA_JSON__</script>
 <script>
 let DATA = JSON.parse(document.getElementById('data').textContent);
-const CYCLE = ['ignored', 'hole', 'slot', 'tab', 'boundary'];
+const CYCLE = ['ignored', 'hole', 'edge'];
 let state = DATA.map(d => ({ classification: d.kind || 'ignored' }));
 let selectedIdx = null;
 let polys = [];
@@ -144,26 +138,26 @@ function rebuildPolys() {
     return p;
   });
   // SVG has no z-index -- paint (and hit-test) order is DOM order. A big
-  // BOUNDARY polygon spans a whole panel and would otherwise sit on top of
-  // (and steal clicks from) any smaller slot/tab nested inside it, since it
-  // gets appended after them. Append largest-area features first so smaller
-  // ones always paint on top and stay individually clickable.
+  // CONTAINER polygon spans a whole panel and would otherwise sit on top of
+  // (and steal clicks from) any smaller edge feature nested inside it, since
+  // it gets appended after them. Append largest-area features first so
+  // smaller ones always paint on top and stay individually clickable.
   const paintOrder = DATA.map((d, i) => i).sort((a, b) => polyArea(DATA[b].points) - polyArea(DATA[a].points));
   paintOrder.forEach(i => overlayG.appendChild(polys[i]));
   DATA.forEach((_, i) => render(i));
 }
 
-// `ignored` on a feature that got folded into a sibling boundary reads
+// `ignored` on a feature that got folded into a sibling container reads
 // misleadingly as "gone" if it's shown with the near-invisible ignored
-// style -- it's still corrected, just as ordinary boundary. Show it with
-// the same green-dashed language boundary uses (a finer dash so it doesn't
-// look identical to the boundary polygon itself) instead. Only a feature
-// with nothing to fold into (no sibling boundary at all) is truly excluded
-// and shown with the faint ignored style.
+// style -- it's still corrected, just as an ordinary edge. Show it with
+// the same blue language EDGE uses (a finer dash so it doesn't look
+// identical to a real edge polygon) instead. Only a feature with nothing
+// to fold into (no sibling container at all) is truly excluded and shown
+// with the faint ignored style.
 function displayClass(i) {
   const d = DATA[i];
   const cls = state[i].classification;
-  if (cls === 'ignored' && d.kind !== 'boundary' && boundarySiblingIdx(d.element_index, d.subpath_index) !== -1) {
+  if (cls === 'ignored' && !d.is_container && containerSiblingIdx(d.element_index, d.subpath_index) !== -1) {
     return 'ignored-merged';
   }
   return cls;
@@ -211,17 +205,19 @@ document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
 });
 
-// A windowed feature (slot/tab) or a manually-added one was carved out of
-// its subpath's BOUNDARY entry -- its edges were removed from boundary's
-// member_edges when it was created (see find_features / addCustomFeature).
-// Marking it `ignored` without undoing that would leave those specific
-// edges completely uncorrected while their neighbors shift around them,
-// producing a visible step/gap in the finished part right at that spot.
-// Instead, fold the edges back into the sibling boundary entry (so they
-// get ordinary boundary correction) when ignoring, and reclaim them back
-// out of boundary if the feature is un-ignored later.
-function boundarySiblingIdx(elementIndex, subpathIndex) {
-  return DATA.findIndex(d => d.element_index === elementIndex && d.subpath_index === subpathIndex && d.kind === 'boundary');
+// A windowed EDGE feature (or a manually-added one) was carved out of its
+// subpath's CONTAINER entry -- the one leftover-boundary feature each
+// subpath gets for "whatever wasn't separately detected" (see
+// find_features / addCustomFeature) -- its edges were removed from the
+// container's member_edges when it was created. Marking it `ignored`
+// without undoing that would leave those specific edges completely
+// uncorrected while their neighbors shift around them, producing a visible
+// step/gap in the finished part right at that spot. Instead, fold the
+// edges back into the sibling container entry (so they get ordinary
+// container correction) when ignoring, and reclaim them back out of the
+// container if the feature is un-ignored later.
+function containerSiblingIdx(elementIndex, subpathIndex) {
+  return DATA.findIndex(d => d.element_index === elementIndex && d.subpath_index === subpathIndex && d.is_container);
 }
 
 function setClassification(i, newCls) {
@@ -229,8 +225,8 @@ function setClassification(i, newCls) {
   const oldCls = state[i].classification;
   if (oldCls === newCls) return;
 
-  if (d.kind !== 'boundary') {
-    const bIdx = boundarySiblingIdx(d.element_index, d.subpath_index);
+  if (!d.is_container) {
+    const bIdx = containerSiblingIdx(d.element_index, d.subpath_index);
     if (bIdx !== -1 && bIdx !== i) {
       const bEdges = new Set(DATA[bIdx].member_edges);
       if (newCls === 'ignored' && oldCls !== 'ignored') {
@@ -245,21 +241,10 @@ function setClassification(i, newCls) {
   state[i].classification = newCls;
 }
 
-// Manually classifying a carved-out feature as `boundary` would leave it
-// as its own separate polygon rendered identically to (and overlapping)
-// the real boundary polygon -- confusing, and functionally redundant with
-// `ignored`, which already achieves "treat this as ordinary boundary" via
-// the fold-back above. So `boundary` is only offered as a target for the
-// subpath's own actual boundary entry.
-function cycleOptions(i) {
-  return DATA[i].kind === 'boundary' ? CYCLE : CYCLE.filter(c => c !== 'boundary');
-}
-
 function cycle(i) {
   pushUndo();
-  const opts = cycleOptions(i);
-  const cur = opts.indexOf(state[i].classification);
-  setClassification(i, opts[(cur + 1) % opts.length]);
+  const cur = CYCLE.indexOf(state[i].classification);
+  setClassification(i, CYCLE[(cur + 1) % CYCLE.length]);
   render(i);
   renderList();
   renderCounts();
@@ -360,10 +345,10 @@ async function addCustomFeature(element_index, subpath_index, p1, p2) {
 
   pushUndo();
   // The new feature's edges were previously claimed by that same subpath's
-  // BOUNDARY entry (the catch-all for "whatever wasn't separately
+  // CONTAINER entry (the catch-all for "whatever wasn't separately
   // detected") -- trim them out there so they aren't corrected twice.
   const claimed = new Set(feature.member_edges);
-  const bIdx = boundarySiblingIdx(element_index, subpath_index);
+  const bIdx = containerSiblingIdx(element_index, subpath_index);
   if (bIdx !== -1) {
     const trimmed = DATA[bIdx].member_edges.filter(v => !claimed.has(v));
     DATA[bIdx].member_edges = trimmed;
@@ -392,10 +377,10 @@ async function addCustomFeature(element_index, subpath_index, p1, p2) {
 }
 
 function renderCounts() {
-  const counts = { hole: 0, slot: 0, tab: 0, boundary: 0, ignored: 0 };
+  const counts = { hole: 0, edge: 0, ignored: 0 };
   state.forEach(s => counts[s.classification]++);
   document.getElementById('counts').textContent =
-    `${DATA.length} features analyzed — ${counts.hole} hole, ${counts.slot} slot, ${counts.tab} tab, ${counts.boundary} boundary selected`;
+    `${DATA.length} features analyzed — ${counts.hole} hole, ${counts.edge} edge selected`;
 }
 
 function renderList() {
@@ -409,7 +394,7 @@ function renderList() {
       <span class="cls-badge ${state[i].classification}">${state[i].classification}</span>`;
     const ctrl = document.createElement('div');
     ctrl.className = 'row-controls';
-    cycleOptions(i).forEach(c => {
+    CYCLE.forEach(c => {
       const b = document.createElement('button');
       b.textContent = c;
       if (state[i].classification === c) b.classList.add('active');

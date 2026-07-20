@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Step 2 of the selective joint-correction workflow: apply a manifest saved
 by review_joints.py. Only the specific vertices belonging to an accepted
-HOLE/SLOT/TAB feature move; everything else in the file -- other elements,
+HOLE/EDGE feature move; everything else in the file -- other elements,
 and other parts of a subpath a feature happens to be embedded in -- is
 re-emitted exactly as originally drawn, curves included.
 """

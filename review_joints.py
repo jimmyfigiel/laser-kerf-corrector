@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-"""Step 1 of the selective joint-correction workflow: auto-detect HOLE/SLOT/
-TAB features in an SVG, open a browser GUI to verify/adjust them, and save a
+"""Step 1 of the selective joint-correction workflow: auto-detect HOLE/EDGE
+features in an SVG, open a browser GUI to verify/adjust them, and save a
 manifest for apply_joints.py.
 """
 
@@ -34,11 +34,10 @@ def main(argv=None):
     features = joints.find_features(infos, doc.scale_user_units_per_mm)
     payload = joints.to_payload(features)
 
-    counts = {"hole": 0, "slot": 0, "tab": 0, "boundary": 0}
+    counts = {"hole": 0, "edge": 0}
     for f in features:
         counts[f.kind] = counts.get(f.kind, 0) + 1
-    print(f"Found {len(features)} features: {counts['hole']} hole, {counts['slot']} slot, "
-          f"{counts['tab']} tab, {counts['boundary']} boundary.")
+    print(f"Found {len(features)} features: {counts['hole']} hole, {counts['edge']} edge.")
 
     app, saved_event = review_app.build_app(args.input, payload, manifest_path)
     server = make_server("127.0.0.1", args.port, app)

@@ -214,8 +214,9 @@ safe to host somewhere other people can reach.
 
 **PythonAnywhere:**
 
-1. Upload the project (git clone, or upload a zip, from a Bash console)
-   and create a virtualenv there: `mkvirtualenv --python=python3.11
+1. From a Bash console on PythonAnywhere: `git clone
+   https://github.com/jimmyfigiel/laser-kerf-corrector.git`, then create a
+   virtualenv and install into it: `mkvirtualenv --python=python3.11
    laser-kerf-corrector && pip install -r requirements.txt`.
 2. In the **Web** tab, create a new web app, choose "Manual configuration"
    (not one of the framework wizards), and point the virtualenv setting at

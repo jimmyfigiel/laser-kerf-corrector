@@ -149,6 +149,7 @@ PAGE = """<!doctype html>
   <h1><a href="__HUB_URL__">&larr; Tools</a> / Laser kerf corrector</h1>
   <div class="file" id="topbar-file"></div>
   <a class="action" id="change-file" style="display:none">upload a different file</a>
+  <a class="action" href="/feedback/?tool=Laser%20Kerf%20Corrector" target="_blank">report a bug / suggest a feature</a>
 </div>
 
 <div id="screen-pick" class="screen active">

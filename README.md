@@ -262,6 +262,42 @@ module next to `kerf_tool.py`, give it a `Blueprint` with its own
 `kerf_tool.bp`, and add an entry to `hub.py`'s `TOOLS` list so it gets a
 card on the landing page. No other file needs to change.
 
+## Feedback
+
+`kerfcorrector/feedback.py` is a small Blueprint (not listed as a tool card
+on the landing page, but reachable directly) for collecting bug reports and
+enhancement requests from users:
+
+- `/feedback/` — a public submission form. Every tool's topbar links here
+  (`?tool=<name>` prefills which tool it's about); the message, an optional
+  contact address, and the page the user came from (`document.referrer`)
+  are all captured.
+- `/feedback/api/submit` — the form posts here; each submission is appended
+  as one line of JSON to a flat file living **outside** the git-tracked
+  repo, in the deploying user's home directory (`~/laser-kerf-corrector-data/feedback.jsonl`
+  by default, overridable via the `FEEDBACK_DATA_DIR` environment variable).
+  Outside the repo means `git pull` never touches it and it survives every
+  deploy/reload, unlike the tools' own in-memory upload store.
+- `/feedback/admin` — lists submissions newest-first. Protected by HTTP
+  Basic Auth: set the `FEEDBACK_ADMIN_PASS` environment variable (and
+  optionally `FEEDBACK_ADMIN_USER`, default `admin`) before the app starts,
+  or the admin page refuses to serve (503) rather than fall back to an
+  unprotected or default-password state. On PythonAnywhere, set it in the
+  WSGI configuration file, right before the `from wsgi import application`
+  line:
+  ```python
+  import os
+  os.environ['FEEDBACK_ADMIN_PASS'] = 'choose-a-real-password-here'
+  ```
+  then reload the web app. For local testing, set it in your shell before
+  running `app.py`.
+
+User-submitted content is HTML-escaped before being rendered on the admin
+page, so a submission can't inject script into your own browser session
+when you go read it. There's no rate limiting or spam filtering on the
+submission endpoint — fine at hobby-project traffic, but worth knowing if
+this ever gets linked somewhere with real volume.
+
 ## Limitations
 
 - Only `<path>`, `<polygon>`, `<polyline>`, `<rect>`, `<circle>`, `<ellipse>`,

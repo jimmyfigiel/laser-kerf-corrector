@@ -101,6 +101,21 @@ PAGE = """<!doctype html>
   #result-info .err { color: #f88; }
   #result-info b { color: #8fd0ff; }
   #result-info a.download { display: inline-block; margin-top: 8px; color: #6cf; }
+  #view3d-btn { margin-top: 10px; }
+  #three-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 50;
+    align-items: center; justify-content: center; }
+  #three-overlay.open { display: flex; }
+  #three-panel { background: #1e1e1e; border: 1px solid #444; border-radius: 8px; width: min(900px, 92vw);
+    height: min(680px, 88vh); display: flex; flex-direction: column; overflow: hidden; }
+  #three-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px;
+    border-bottom: 1px solid #444; font-size: 13px; }
+  #three-panel-head .hint { color: #999; font-size: 11px; }
+  #three-close { background: none; border: none; color: #ccc; font-size: 18px; cursor: pointer; line-height: 1; }
+  #three-canvas-wrap { flex: 1; position: relative; }
+  #three-canvas-wrap canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  #three-canvas-wrap canvas.dragging { cursor: grabbing; }
+  #three-status { position: absolute; top: 10px; left: 10px; font-size: 12px; color: #ccc; background: rgba(0,0,0,0.5);
+    padding: 5px 9px; border-radius: 4px; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -139,7 +154,7 @@ PAGE = """<!doctype html>
     band being etched.</div>
 
     <label>Side length <span class="unit">(mm)</span></label>
-    <input type="number" id="p-side" value="158" step="1" min="1">
+    <input type="number" id="p-side" value="148" step="1" min="1">
     <div class="sub">Lay the tape flat along the tapered side, from the
     bottom rim straight up to the top rim -- not the vertical height, which
     isn't directly measurable without already knowing the taper.</div>
@@ -185,6 +200,18 @@ PAGE = """<!doctype html>
       <div id="preview-placeholder">Set the cup's dimensions and click "Generate pattern".</div>
     </div>
     <div id="result-info"></div>
+  </div>
+</div>
+
+<div id="three-overlay">
+  <div id="three-panel">
+    <div id="three-panel-head">
+      <div>3D preview <span class="hint">-- drag to rotate, scroll to zoom</span></div>
+      <button id="three-close">&times;</button>
+    </div>
+    <div id="three-canvas-wrap">
+      <div id="three-status">Loading 3D viewer...</div>
+    </div>
   </div>
 </div>
 
@@ -362,7 +389,218 @@ document.getElementById('generate').addEventListener('click', async () => {
   link.textContent = 'Download ' + data.download_name;
   link.setAttribute('download', data.download_name);
   info.appendChild(link);
+
+  lastGenerateData = data;
+  const view3dBtn = document.createElement('button');
+  view3dBtn.className = 'btn';
+  view3dBtn.id = 'view3d-btn';
+  view3dBtn.textContent = 'View in 3D';
+  view3dBtn.addEventListener('click', open3DPreview);
+  info.appendChild(document.createElement('br'));
+  info.appendChild(view3dBtn);
 });
+
+// ---------------- 3D preview ----------------
+// Renders the cup as a tapered frustum (real mm dimensions) and composites
+// the exact same warped pattern already generated above onto the correct
+// sub-region of its surface -- the same wrap angle and vertical offset the
+// 2D pattern used -- so this is a direct visualization of the same math,
+// not a separate approximation. Three.js is loaded lazily (only once you
+// ask for the 3D view) straight from a CDN, since this is a large library
+// most users of this tool will never touch the button for.
+let lastGenerateData = null;
+let threeState = null;
+
+document.getElementById('three-close').addEventListener('click', close3DPreview);
+document.getElementById('three-overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'three-overlay') close3DPreview();
+});
+
+function close3DPreview() {
+  document.getElementById('three-overlay').classList.remove('open');
+  if (threeState) {
+    cancelAnimationFrame(threeState.animId);
+    window.removeEventListener('resize', threeState.onResize);
+    threeState.renderer.dispose();
+    threeState = null;
+  }
+  document.getElementById('three-canvas-wrap').innerHTML = '<div id="three-status"></div>';
+}
+
+async function open3DPreview() {
+  if (!lastGenerateData) return;
+  const data = lastGenerateData;
+  document.getElementById('three-overlay').classList.add('open');
+  const wrap = document.getElementById('three-canvas-wrap');
+  wrap.innerHTML = '<div id="three-status">Loading 3D viewer...</div>';
+
+  let THREE;
+  try {
+    THREE = await import('https://unpkg.com/three@0.160.0/build/three.module.js');
+  } catch (e) {
+    wrap.innerHTML = '<div id="three-status">Could not load the 3D viewer ' +
+      '(needs internet access to unpkg.com).</div>';
+    return;
+  }
+
+  const texCanvas = await buildCupTexture(data);
+  if (!document.getElementById('three-overlay').classList.contains('open')) return; // closed while loading
+
+  wrap.innerHTML = '';
+  const width = wrap.clientWidth, height = wrap.clientHeight;
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(width, height);
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  wrap.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x2a2a2a);
+
+  const bottomR = data.bottom_diameter_mm / 2;
+  const topR = data.top_diameter_mm / 2;
+  const fullHeight = data.available_height_mm;
+  const geometry = buildFrustumGeometry(THREE, bottomR, topR, fullHeight, 64, 24);
+
+  const texture = new THREE.CanvasTexture(texCanvas);
+  // Three.js flips canvas textures on the V axis by default (WebGL's
+  // texture-space convention vs. a canvas's top-row-first pixel data) --
+  // our own UV mapping (buildFrustumGeometry) already puts v=0 at the top
+  // rim to directly match the canvas's own row 0, so undo that default flip.
+  texture.flipY = false;
+  const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.65, metalness: 0.0, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(geometry, material);
+  scene.add(mesh);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  dirLight.position.set(150, 200, 250);
+  scene.add(dirLight);
+
+  const maxDim = Math.max(bottomR, topR, fullHeight / 2);
+  const camera = new THREE.PerspectiveCamera(40, width / height, maxDim * 0.05, maxDim * 50);
+  let dist = maxDim * 4.2, azimuth = 0, polar = Math.PI / 2;
+
+  function updateCamera() {
+    camera.position.set(
+      dist * Math.sin(polar) * Math.sin(azimuth),
+      dist * Math.cos(polar),
+      dist * Math.sin(polar) * Math.cos(azimuth),
+    );
+    camera.lookAt(0, 0, 0);
+  }
+  updateCamera();
+
+  const canvas = renderer.domElement;
+  let dragging = false, lastX = 0, lastY = 0;
+  canvas.addEventListener('mousedown', (e) => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY; canvas.classList.add('dragging');
+  });
+  window.addEventListener('mouseup', () => { dragging = false; canvas.classList.remove('dragging'); });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    azimuth -= (e.clientX - lastX) * 0.008;
+    polar -= (e.clientY - lastY) * 0.008;
+    polar = Math.max(0.15, Math.min(Math.PI - 0.15, polar));
+    lastX = e.clientX; lastY = e.clientY;
+    updateCamera();
+  });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    dist *= (e.deltaY > 0 ? 1.1 : 0.9);
+    dist = Math.max(maxDim * 1.5, Math.min(maxDim * 14, dist));
+    updateCamera();
+  }, { passive: false });
+
+  const onResize = () => {
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  };
+  window.addEventListener('resize', onResize);
+
+  threeState = { renderer, animId: null, onResize };
+  function animate() {
+    threeState.animId = requestAnimationFrame(animate);
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+// A hand-rolled grid mesh rather than THREE.CylinderGeometry so the UV
+// mapping is explicit and known (u: 0..1 around the full circumference,
+// v: 0 at the top rim to 1 at the bottom rim) instead of relying on
+// library-internal conventions -- buildCupTexture below is written against
+// this exact mapping. u=0.5 (texture's horizontal center) is placed at
+// world +Z, which is also where the default camera (azimuth=0) looks from,
+// so the pattern's own front-center is what you see first.
+function buildFrustumGeometry(THREE, bottomR, topR, height, radialSegments, heightSegments) {
+  const positions = [], uvs = [], indices = [];
+  const halfH = height / 2;
+
+  for (let j = 0; j <= heightSegments; j++) {
+    const v = j / heightSegments;
+    const y = halfH - v * height;
+    const r = topR + (bottomR - topR) * v;
+    for (let i = 0; i <= radialSegments; i++) {
+      const u = i / radialSegments;
+      const theta = (u - 0.5) * Math.PI * 2;
+      positions.push(r * Math.sin(theta), y, r * Math.cos(theta));
+      uvs.push(u, v);
+    }
+  }
+
+  const rowSize = radialSegments + 1;
+  for (let j = 0; j < heightSegments; j++) {
+    for (let i = 0; i < radialSegments; i++) {
+      const a = j * rowSize + i, b = a + 1, c = a + rowSize, d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+// Composites the already-generated (flat, warped) pattern onto a plain
+// "bare glass" background at the correct fractional position -- the same
+// wrap angle (horizontal) and axial offset/height (vertical) used to
+// generate it -- so what's pasted here is pixel-for-pixel the same
+// projection as the etching pattern itself, just placed in cylindrical UV
+// space instead of a flat rectangle.
+function buildCupTexture(data) {
+  return new Promise((resolve) => {
+    const refDiameter = (data.bottom_diameter_mm + data.top_diameter_mm) / 2;
+    const texW = 2048;
+    const texH = Math.max(256, Math.round(texW * data.available_height_mm / (Math.PI * refDiameter)));
+    const canvas = document.createElement('canvas');
+    canvas.width = texW;
+    canvas.height = texH;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#cfd8de';
+    ctx.fillRect(0, 0, texW, texH);
+
+    const wrapFrac = data.wrap_angle_deg / 360;
+    const patX = (0.5 - wrapFrac / 2) * texW;
+    const patW = wrapFrac * texW;
+    const vTop = data.axial_top_offset_mm / data.available_height_mm;
+    const vBottom = (data.axial_top_offset_mm + data.output_height_mm) / data.available_height_mm;
+    const patY = vTop * texH;
+    const patH = (vBottom - vTop) * texH;
+
+    const img = new Image();
+    img.onload = () => {
+      ctx.drawImage(img, patX, patY, patW, patH);
+      resolve(canvas);
+    };
+    img.src = data.preview_data_url;
+  });
+}
 </script>
 </body>
 </html>
@@ -425,6 +663,12 @@ def generate():
         "preview_data_url": preview_data_url,
         "download_token": download_token,
         "download_name": download_name,
+        # For the 3D preview -- everything needed to build the cup mesh and
+        # place this same pattern on it, independent of the flat 2D preview.
+        "bottom_diameter_mm": 2 * geom.bottom_radius_mm,
+        "top_diameter_mm": 2 * geom.top_radius_mm,
+        "available_height_mm": geom.available_height_mm,
+        "axial_top_offset_mm": geom.axial_top_offset_mm,
     })
 
 

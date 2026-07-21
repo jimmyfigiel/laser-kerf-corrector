@@ -8,11 +8,27 @@ pass it as an argument or set DEPLOY_SECRET in your own shell first.
 
 import json
 import os
+import ssl
 import sys
 import urllib.error
 import urllib.request
 
 DOMAIN = "makertools.pythonanywhere.com"
+
+
+def _https_context():
+    """Prefer certifi's CA bundle over the OS trust store. Windows'
+    built-in certificate engine can fail Let's Encrypt's chain validation
+    on machines that still have the old, expired `DST Root CA X3`
+    cross-sign cached as a trusted root (a well-known issue since that
+    root expired in September 2021) -- certifi ships Mozilla's own
+    curated bundle and sidesteps that path entirely. Falls back to the
+    default (OS) context if certifi isn't installed."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
 
 
 def main(argv=None):
@@ -27,7 +43,7 @@ def main(argv=None):
         headers={"X-Deploy-Secret": secret},
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=60, context=_https_context()) as resp:
             body = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         print(f"Deploy request failed: HTTP {e.code}")

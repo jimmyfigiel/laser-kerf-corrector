@@ -4,3 +4,4 @@ shapely
 flask
 numpy
 Pillow
+certifi

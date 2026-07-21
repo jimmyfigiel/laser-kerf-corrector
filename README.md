@@ -262,6 +262,16 @@ module next to `kerf_tool.py`, give it a `Blueprint` with its own
 `kerf_tool.bp`, and add an entry to `hub.py`'s `TOOLS` list so it gets a
 card on the landing page. No other file needs to change.
 
+**Working on more than one tool at once (e.g. two Claude chats in the same
+checkout):** editing in parallel is fine, since each tool lives in its own
+module. Deploying isn't automatically safe to parallelize, though — a
+`git pull` + reload on PythonAnywhere picks up whatever's on `main` at that
+moment, so reloading to ship your own change can also push out someone
+else's still-untested one if it landed on `main` first. Check `git log`
+before you deploy to make sure you know what you're actually shipping, and
+treat push-pull-reload as one uninterrupted sequence rather than starting
+it and walking away mid-deploy.
+
 ## Feedback
 
 `kerfcorrector/feedback.py` is a small Blueprint (not listed as a tool card

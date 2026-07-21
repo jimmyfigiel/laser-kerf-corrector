@@ -399,17 +399,21 @@ both applied, the two cancel out and the finished etching reads as the
 original, undistorted rectangle.
 
 The taper (top diameter vs. bottom diameter) doesn't actually change that
-horizontal correction -- it's driven purely by how much of the
+horizontal correction directly -- it's driven purely by how much of the
 circumference the design covers (the **wrap angle**), not by the cup's
-absolute size. What the taper *does* determine is the output's physical
-size: the diameter used to convert the rotary's rotation into a real-world
-width is the diameter at the *mid-height* of the design (exactly the
-average of the top and bottom diameters, since the taper is linear) --
-that's the number to enter into your rotary attachment's own calibration
-(LightBurn's "Rotary Setup" or equivalent), and the tool reports it
-alongside the generated pattern so the two stay in sync. Get that number
-wrong (or use a different one than what you calibrated the rotary with)
-and the pattern will be the right shape but the wrong physical size.
+absolute size. What the taper *does* determine is which diameter that
+wrap angle is even relative to: the diameter used to convert the rotary's
+rotation into a real-world width is the diameter at the design's *own
+vertical center*, not just the cup's overall mid-height -- a short design
+placed near the narrow end of a tapered cup sees a meaningfully different
+diameter than the same design centered on the whole taper, so where
+vertically the design sits genuinely changes the correction, not only the
+final output's physical size. That's the number to enter into your rotary
+attachment's own calibration (LightBurn's "Rotary Setup" or equivalent),
+and the tool reports it alongside the generated pattern so the two stay in
+sync. Get that number wrong (or use a different one than what you
+calibrated the rotary with) and the pattern will be the right shape but
+the wrong physical size.
 
 Because this corrects a *front-view* effect, it's only defined for a
 front-facing panel, not a full wrap-around design -- there's no single
@@ -418,36 +422,40 @@ capped at 175° for that reason (a value approaching 180° would need
 near-infinite stretching right at the edge, where the surface is exactly
 edge-on to the viewer).
 
-**Using it:** the four cup-geometry inputs are chosen to be things you can
+**Using it:** the cup-geometry inputs are chosen to be things you can
 measure directly with a soft tape measure, no math required -- wrap it
 around the rim at the bottom and top of the design area for the two
-**circumferences**, and lay it flat along the tapered side from the bottom
-rim straight up to the top rim for the **side length**. That last one is
-deliberately the slant distance along the surface, not the vertical height
-between the rims -- the vertical height isn't something you can measure
-directly without already knowing the taper, whereas the side length is
-just a straight tape measurement. From those three (which fully describe
-the frustum) plus a **design width** (how wide the finished etching should
-look, viewed head-on), the tool derives the wrap angle and the mid-height
-(rotary calibration) diameter, plus how much axial height is *available*
-along the cup's side -- there's a live-updating readout of all three as you
-type, before you even upload an image. Also pick a resolution in DPI
-(converted to the pixels/mm `cup_etch.py`'s own math uses internally) and
-whether to dither. Dithering runs a Floyd-Steinberg error diffusion
-down to pure black/white, which is what makes a continuous-tone photo
-still show shading once etched (a laser can only mark or not mark a given
-spot) -- leave it off for a logo or line art that's already high-contrast.
+**circumferences**, and lay it flat along the tapered side for the **side
+length** (bottom rim straight up to top rim) and the **distance from top**
+(top rim down to where the design should start). Both of those last two
+are deliberately slant distances along the surface, not vertical heights
+-- vertical height isn't something you can measure directly without
+already knowing the taper, whereas a tape laid flat against the surface
+is a plain, direct measurement. From those four (which fully describe the
+frustum and where on it the design sits) plus a **design width** (how
+wide the finished etching should look, viewed head-on), the tool derives
+the wrap angle and the rotary-calibration diameter *at the design's own
+position*, plus how much axial height is available below the offset --
+there's a live-updating readout of all three as you type, using the
+uploaded image's own dimensions (read client-side, no server round trip)
+to get the design's actual height right before you even generate anything.
+Also pick a resolution in DPI (converted to the pixels/mm `cup_etch.py`'s
+own math uses internally) and whether to dither. Dithering runs a
+Floyd-Steinberg error diffusion down to pure black/white, which is what
+makes a continuous-tone photo still show shading once etched (a laser can
+only mark or not mark a given spot) -- leave it off for a logo or line art
+that's already high-contrast.
 
 The uploaded image itself is never cropped or stretched: it's scaled to
 the design width while keeping its own proportions, and the design's
 actual height is whatever that scaling works out to (a wide image ends up
 short, a tall one ends up tall) -- not forced to fill some independently-
-computed height. If that height would exceed what's actually available
-along the cup's side (the side-length-derived figure above), generating
-the pattern fails with a clear error rather than silently cropping the
-image to fit; the fix is a narrower design width or a differently-shaped
-source image. The result comes back as a PNG (alpha channel preserved, so
-a transparent background stays transparent/unetched) sized to the exact
+computed height. If that height would exceed what's actually left below
+the distance-from-top offset, generating the pattern fails with a clear
+error rather than silently cropping the image to fit; the fix is a
+narrower design width, a smaller offset, or a differently-shaped source
+image. The result comes back as a PNG (alpha channel preserved, so a
+transparent background stays transparent/unetched) sized to the exact
 physical dimensions reported alongside it.
 
 ## Tests

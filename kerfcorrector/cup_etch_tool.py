@@ -144,6 +144,14 @@ PAGE = """<!doctype html>
     bottom rim straight up to the top rim -- not the vertical height, which
     isn't directly measurable without already knowing the taper.</div>
 
+    <label>Distance from top <span class="unit">(mm)</span></label>
+    <input type="number" id="p-offset" value="0" step="1" min="0">
+    <div class="sub">Same kind of measurement as side length -- lay the
+    tape flat along the side, from the top rim down to where the design
+    should start. Matters because the diameter at the design's own
+    position (not just the cup's overall taper) is what the projection
+    below is corrected against.</div>
+
     <label>Design width <span class="unit">(mm)</span></label>
     <input type="number" id="p-width" value="60" step="1" min="1">
     <div class="sub">How wide the finished etching should look, viewed
@@ -183,6 +191,7 @@ PAGE = """<!doctype html>
 <script>
 const API = '__API_PREFIX__';
 let uploadToken = null, uploadFilename = null;
+let uploadedImgW = null, uploadedImgH = null;
 
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
@@ -216,6 +225,19 @@ async function uploadFile(file) {
   document.getElementById('change-file').style.display = 'inline';
   document.getElementById('screen-pick').style.display = 'none';
   document.getElementById('body').style.display = 'flex';
+
+  // Read the image's own natural dimensions client-side (no server round
+  // trip needed) so the live geometry preview below can mirror the real
+  // Python math -- which needs the image's aspect ratio -- as you type.
+  const objectUrl = URL.createObjectURL(file);
+  const probe = new Image();
+  probe.onload = () => {
+    uploadedImgW = probe.naturalWidth;
+    uploadedImgH = probe.naturalHeight;
+    URL.revokeObjectURL(objectUrl);
+    computeGeometryPreview();
+  };
+  probe.src = objectUrl;
 }
 document.getElementById('change-file').addEventListener('click', () => {
   fileInput.value = '';
@@ -224,25 +246,30 @@ document.getElementById('change-file').addEventListener('click', () => {
   document.getElementById('screen-pick').style.display = 'block';
 });
 
-// Mirrors CupGeometry's own formulas (see cup_etch.py) purely so the user
-// gets instant feedback on the calculated height/coverage/rotary-diameter
-// while typing, without a round trip -- the actual pattern generation
-// below still goes through the real Python geometry class, which is the
-// authority (including its own validation) on whether these numbers work.
+// Mirrors CupGeometry/design_geometry_for_image's own formulas (see
+// cup_etch.py) purely so the user gets instant feedback while typing,
+// without a round trip -- the actual pattern generation below still goes
+// through the real Python geometry code, which is the authority (including
+// its own validation) on whether these numbers work.
 function computeGeometryPreview() {
   const bottomCirc = parseFloat(document.getElementById('p-bottom-circ').value);
   const topCirc = parseFloat(document.getElementById('p-top-circ').value);
   const side = parseFloat(document.getElementById('p-side').value);
+  const offset = parseFloat(document.getElementById('p-offset').value);
   const width = parseFloat(document.getElementById('p-width').value);
   const out = document.getElementById('computed-geom');
 
-  if (![bottomCirc, topCirc, side, width].every(v => Number.isFinite(v) && v > 0)) {
+  if (![bottomCirc, topCirc, side, width].every(v => Number.isFinite(v) && v > 0) ||
+      !(Number.isFinite(offset) && offset >= 0)) {
     out.innerHTML = '';
+    return;
+  }
+  if (offset >= side) {
+    out.innerHTML = `<span class="err">Distance from top must be less than the side length.</span>`;
     return;
   }
   const bottomR = bottomCirc / (2 * Math.PI);
   const topR = topCirc / (2 * Math.PI);
-  const refDiameter = bottomR + topR;
   const deltaR = bottomR - topR;
   const discriminant = side * side - deltaR * deltaR;
   if (discriminant <= 0) {
@@ -250,21 +277,41 @@ function computeGeometryPreview() {
       `it must be more than ${Math.abs(deltaR).toFixed(1)}mm.</span>`;
     return;
   }
-  const height = Math.sqrt(discriminant);
-  const maxWidth = refDiameter * Math.sin(87.5 * Math.PI / 180);
-  if (width >= maxWidth) {
-    out.innerHTML = `<span class="err">Design width must stay under ${maxWidth.toFixed(1)}mm ` +
-      `for this cup (can't reach the ${refDiameter.toFixed(1)}mm mid-height diameter).</span>`;
+  const availableHeight = Math.sqrt(discriminant);
+  const axialOffset = offset * (availableHeight / side);
+
+  if (!uploadedImgW || !uploadedImgH) {
+    out.innerHTML = `Available height along the side: <b>${availableHeight.toFixed(1)}mm</b><br>` +
+      `(design height, local diameter, and front coverage need the uploaded image's own ` +
+      `proportions -- shown once it's loaded)`;
     return;
   }
-  const wrapAngle = 2 * Math.asin(width / refDiameter) * 180 / Math.PI;
-  out.innerHTML = `Available height along the side: <b>${height.toFixed(1)}mm</b> ` +
-    `(the image is scaled to the design width above, keeping its own proportions -- ` +
-    `its actual height depends on the image and must fit within this)<br>` +
-    `Mid-height (rotary calibration) diameter: <b>${refDiameter.toFixed(1)}mm</b><br>` +
+
+  const designHeight = width * uploadedImgH / uploadedImgW;
+  if (axialOffset + designHeight > availableHeight) {
+    const remaining = availableHeight - axialOffset;
+    out.innerHTML = `<span class="err">At this width, the image would be ` +
+      `${designHeight.toFixed(1)}mm tall -- more than the ${remaining.toFixed(1)}mm remaining ` +
+      `below the offset on this ${availableHeight.toFixed(1)}mm-tall side.</span>`;
+    return;
+  }
+  const topD = 2 * topR, bottomD = 2 * bottomR;
+  const centerOffset = axialOffset + designHeight / 2;
+  const localDiameter = topD + (bottomD - topD) * (centerOffset / availableHeight);
+
+  const maxWidth = localDiameter * Math.sin(87.5 * Math.PI / 180);
+  if (width >= maxWidth) {
+    out.innerHTML = `<span class="err">Design width must stay under ${maxWidth.toFixed(1)}mm ` +
+      `at this position (can't reach the ${localDiameter.toFixed(1)}mm local diameter).</span>`;
+    return;
+  }
+  const wrapAngle = 2 * Math.asin(width / localDiameter) * 180 / Math.PI;
+  out.innerHTML = `Design height: <b>${designHeight.toFixed(1)}mm</b> ` +
+    `(available: ${availableHeight.toFixed(1)}mm)<br>` +
+    `Diameter at design's position (rotary calibration): <b>${localDiameter.toFixed(1)}mm</b><br>` +
     `Front coverage: <b>${wrapAngle.toFixed(0)}&deg;</b>`;
 }
-['p-bottom-circ', 'p-top-circ', 'p-side', 'p-width'].forEach(id =>
+['p-bottom-circ', 'p-top-circ', 'p-side', 'p-offset', 'p-width'].forEach(id =>
   document.getElementById(id).addEventListener('input', computeGeometryPreview));
 computeGeometryPreview();
 
@@ -278,6 +325,7 @@ document.getElementById('generate').addEventListener('click', async () => {
     bottom_circumference_mm: parseFloat(document.getElementById('p-bottom-circ').value),
     top_circumference_mm: parseFloat(document.getElementById('p-top-circ').value),
     side_length_mm: parseFloat(document.getElementById('p-side').value),
+    top_offset_mm: parseFloat(document.getElementById('p-offset').value),
     design_width_mm: parseFloat(document.getElementById('p-width').value),
     dpi: parseFloat(document.getElementById('p-dpi').value),
     dither: document.getElementById('p-dither').checked,
@@ -306,8 +354,8 @@ document.getElementById('generate').addEventListener('click', async () => {
     `Output: <b>${data.output_w}&times;${data.output_h}px</b> ` +
     `(<b>${data.output_width_mm.toFixed(1)}mm &times; ${data.output_height_mm.toFixed(1)}mm</b>, ` +
     `${data.wrap_angle_deg.toFixed(0)}&deg; front coverage)<br>` +
-    `Set your rotary attachment's object/roller diameter to <b>${data.reference_diameter_mm.toFixed(1)}mm</b> ` +
-    `to match this pattern (the diameter at the design's mid-height).`;
+    `Set your rotary attachment's object/roller diameter to <b>${data.local_diameter_mm.toFixed(1)}mm</b> ` +
+    `to match this pattern (the diameter at this design's own vertical position).`;
   const link = document.createElement('a');
   link.className = 'download';
   link.href = API + '/api/download/' + data.download_token;
@@ -349,13 +397,14 @@ def generate():
             top_circumference_mm=float(body["top_circumference_mm"]),
             side_length_mm=float(body["side_length_mm"]),
             design_width_mm=float(body["design_width_mm"]),
+            top_offset_mm=float(body.get("top_offset_mm", 0.0)),
         )
         dpi = float(body["dpi"])
         if not (3 <= dpi <= 1270):
             raise ValueError("Resolution must be between 3 and 1270 DPI.")
         px_per_mm = dpi / _MM_PER_INCH
         source = _load_image_array(body["token"])
-        out, out_w, out_h, design_height_mm = cup_etch.build_pattern(
+        out, out_w, out_h, design = cup_etch.build_pattern(
             source, geom, px_per_mm, bool(body.get("dither")))
     except (KeyError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
@@ -370,9 +419,9 @@ def generate():
         "output_w": out_w,
         "output_h": out_h,
         "output_width_mm": geom.design_width_mm,
-        "output_height_mm": design_height_mm,
-        "reference_diameter_mm": geom.reference_diameter_mm,
-        "wrap_angle_deg": geom.wrap_angle_deg,
+        "output_height_mm": design.height_mm,
+        "local_diameter_mm": design.local_diameter_mm,
+        "wrap_angle_deg": design.wrap_angle_deg,
         "preview_data_url": preview_data_url,
         "download_token": download_token,
         "download_name": download_name,

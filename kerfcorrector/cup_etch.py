@@ -8,11 +8,11 @@ rotation angle at every row, regardless of the cup's local diameter at
 that row -- the taper never enters the horizontal mapping. What the taper
 *does* affect is the physical size of the output (the diameter used to
 convert a rotation angle into a real width is the cup's diameter at the
-mid-height of the design -- exact for a linear taper, since the midpoint
-diameter is just the average of top and bottom) and, naturally, how wide
-the finished etching *appears* at the narrow vs. wide end once it's
-actually on the cup -- that's the taper's own true shape showing through,
-not a distortion to correct.
+design's own vertical center -- see DesignGeometry.local_diameter_mm,
+which depends on both the image's own aspect ratio and where on the taper
+it's placed) and, naturally, how wide the finished etching *appears* at
+the narrow vs. wide end once it's actually on the cup -- that's the
+taper's own true shape showing through, not a distortion to correct.
 
 The correction implemented here targets a different effect: viewed
 straight on (an orthographic front view), a curved surface foreshortens
@@ -57,20 +57,22 @@ _MAX_SIN_PHI_MAX = math.sin(math.radians(MAX_WRAP_ANGLE_DEG / 2.0))
 
 @dataclass
 class CupGeometry:
-    """All four inputs are things you can measure directly on a real cup
+    """All five inputs are things you can measure directly on a real cup
     with a soft tape measure and no math: wrap the tape around the top and
     bottom rims for the two circumferences, and lay it flat along the
-    tapered side from the bottom rim to the top rim for the side length
-    (the true along-the-surface slant distance, not the vertical height
-    between rims -- that's not directly measurable without already knowing
-    the taper). The design's own axial height and how much of the
-    circumference it covers are both derived, not entered separately -- see
-    height_mm and phi_max_rad below."""
+    tapered side for the side length and the top offset (both the true
+    along-the-surface slant distance, not vertical height -- that's not
+    directly measurable without already knowing the taper). The design's
+    own axial height and how much of the circumference it covers are both
+    derived, not entered separately -- see design_geometry_for_image, since
+    both also depend on the source image's own aspect ratio, not on this
+    geometry alone."""
 
     bottom_circumference_mm: float
     top_circumference_mm: float
     side_length_mm: float
     design_width_mm: float
+    top_offset_mm: float = 0.0  # slant distance from the top rim to the top of the design
 
     def __post_init__(self):
         if self.bottom_circumference_mm <= 0 or self.top_circumference_mm <= 0:
@@ -79,6 +81,8 @@ class CupGeometry:
             raise ValueError("Side length must be positive.")
         if self.design_width_mm <= 0:
             raise ValueError("Design width must be positive.")
+        if self.top_offset_mm < 0:
+            raise ValueError("Distance from top can't be negative.")
 
         delta_r = abs(self.bottom_radius_mm - self.top_radius_mm)
         if self.side_length_mm <= delta_r:
@@ -88,13 +92,10 @@ class CupGeometry:
                 "a straight side of that length can't reach between the two rims."
             )
 
-        max_width = self.reference_diameter_mm * _MAX_SIN_PHI_MAX
-        if self.design_width_mm >= max_width:
+        if self.top_offset_mm >= self.side_length_mm:
             raise ValueError(
-                f"Design width ({self.design_width_mm:g}mm) is too close to the cup's own "
-                f"mid-height diameter ({self.reference_diameter_mm:.1f}mm) -- keep it under "
-                f"{max_width:.1f}mm, or the edges would need near-infinite stretching (a front "
-                "view can never be wider than the diameter itself)."
+                f"Distance from top ({self.top_offset_mm:g}mm) has to be less than the side "
+                f"length ({self.side_length_mm:g}mm), or there's no room left for a design at all."
             )
 
     @property
@@ -106,21 +107,12 @@ class CupGeometry:
         return self.top_circumference_mm / (2 * math.pi)
 
     @property
-    def reference_diameter_mm(self) -> float:
-        # Linear taper -> the mid-height diameter is exactly the average of
-        # the two rim diameters, i.e. (d_bot+d_top)/2 == r_bot+r_top. This
-        # is the diameter to enter into the rotary attachment's own
-        # calibration, since it's the one the output's physical width below
-        # is computed from.
-        return self.bottom_radius_mm + self.top_radius_mm
-
-    @property
     def available_height_mm(self) -> float:
         # The side length is the slant (along-the-surface) distance between
         # the rims; together with the difference in radii it forms a right
         # triangle whose other leg is the axial height actually available
         # for a design on this cup's tapered side. This bounds how tall a
-        # design can be (see design_height_for_image below) -- it isn't
+        # design can be (see design_geometry_for_image below) -- it isn't
         # itself the design's height, since the design is scaled to fit the
         # chosen width while keeping the source image's own proportions,
         # not stretched/cropped to fill this available height.
@@ -128,8 +120,32 @@ class CupGeometry:
         return math.sqrt(self.side_length_mm ** 2 - delta_r ** 2)
 
     @property
-    def phi_max_rad(self) -> float:
-        return math.asin(self.design_width_mm / self.reference_diameter_mm)
+    def axial_top_offset_mm(self) -> float:
+        # top_offset_mm is a slant distance (tape-measurable); convert to
+        # the equivalent axial distance using the band's own slant-to-axial
+        # ratio, which is constant along a straight taper.
+        return self.top_offset_mm * (self.available_height_mm / self.side_length_mm)
+
+    def diameter_at_axial_offset_from_top(self, axial_offset_mm: float) -> float:
+        """Diameter is linear along the taper -- interpolate between the
+        top and bottom rim diameters by how far down (in axial mm from the
+        top) the given point sits."""
+        frac = axial_offset_mm / self.available_height_mm
+        top_d, bottom_d = 2 * self.top_radius_mm, 2 * self.bottom_radius_mm
+        return top_d + (bottom_d - top_d) * frac
+
+
+@dataclass
+class DesignGeometry:
+    """Everything about how a specific image, placed at geom.top_offset_mm,
+    actually sits on the cup -- depends on the image's own aspect ratio and
+    where vertically it's placed, not on CupGeometry alone (a shorter image
+    higher up the taper sees a different local diameter than the same
+    image lower down, even on an identical cup)."""
+
+    height_mm: float
+    local_diameter_mm: float
+    phi_max_rad: float
 
     @property
     def wrap_angle_deg(self) -> float:
@@ -143,14 +159,34 @@ def design_height_for_image_mm(geom: CupGeometry, src_w: int, src_h: int) -> flo
     return geom.design_width_mm * src_h / src_w
 
 
-def check_fits_on_cup(geom: CupGeometry, design_height_mm: float) -> None:
-    if design_height_mm > geom.available_height_mm:
+def design_geometry_for_image(geom: CupGeometry, src_w: int, src_h: int) -> DesignGeometry:
+    height_mm = design_height_for_image_mm(geom, src_w, src_h)
+    top_offset_mm = geom.axial_top_offset_mm
+
+    if top_offset_mm + height_mm > geom.available_height_mm + 1e-9:
+        remaining = geom.available_height_mm - top_offset_mm
         raise ValueError(
             f"At a design width of {geom.design_width_mm:g}mm, this image would be "
-            f"{design_height_mm:.1f}mm tall -- taller than the {geom.available_height_mm:.1f}mm "
-            "available along this cup's side. Use a narrower design width, or an image with a "
-            "wider (less tall-and-narrow) aspect ratio."
+            f"{height_mm:.1f}mm tall -- more than the {remaining:.1f}mm remaining below the "
+            f"{geom.top_offset_mm:g}mm offset from the top on this "
+            f"{geom.available_height_mm:.1f}mm-tall side. Use a narrower design width, a smaller "
+            "offset, or an image with a wider (less tall-and-narrow) aspect ratio."
         )
+
+    center_offset_mm = top_offset_mm + height_mm / 2.0
+    local_diameter_mm = geom.diameter_at_axial_offset_from_top(center_offset_mm)
+
+    max_width = local_diameter_mm * _MAX_SIN_PHI_MAX
+    if geom.design_width_mm >= max_width:
+        raise ValueError(
+            f"Design width ({geom.design_width_mm:g}mm) is too close to the diameter at this "
+            f"design's own position ({local_diameter_mm:.1f}mm) -- keep it under {max_width:.1f}mm, "
+            "or the edges would need near-infinite stretching (a front view can never be wider "
+            "than the diameter itself)."
+        )
+
+    phi_max_rad = math.asin(geom.design_width_mm / local_diameter_mm)
+    return DesignGeometry(height_mm=height_mm, local_diameter_mm=local_diameter_mm, phi_max_rad=phi_max_rad)
 
 
 def output_size_px(width_mm: float, height_mm: float, px_per_mm: float) -> tuple[int, int]:
@@ -197,13 +233,13 @@ def _bilinear_sample(source: np.ndarray, sx: np.ndarray, sy: np.ndarray) -> np.n
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
-def warp_for_rotary(source: np.ndarray, geom: CupGeometry, out_w: int, out_h: int) -> np.ndarray:
+def warp_for_rotary(source: np.ndarray, phi_max_rad: float, out_w: int, out_h: int) -> np.ndarray:
     """source must already be fit (see fit_cover) to the out_w:out_h aspect
     ratio -- this only applies the front-projection horizontal correction
     (see module docstring) plus a direct proportional vertical resample;
     the vertical axis needs no warp since axial position on a rotary job
     maps straight through with no foreshortening."""
-    phi_max = geom.phi_max_rad
+    phi_max = phi_max_rad
     sin_phi_max = math.sin(phi_max)
 
     u_out = (np.arange(out_w, dtype=np.float64) + 0.5) / out_w * 2.0 - 1.0
@@ -246,18 +282,17 @@ _GRAY_WEIGHTS = np.array([0.299, 0.587, 0.114])
 
 
 def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
-                   dither: bool) -> tuple[np.ndarray, int, int, float]:
-    """Returns (rgba_uint8_array, out_w, out_h, design_height_mm)."""
+                   dither: bool) -> tuple[np.ndarray, int, int, DesignGeometry]:
+    """Returns (rgba_uint8_array, out_w, out_h, design)."""
     src_h, src_w = image_rgba.shape[:2]
-    design_height_mm = design_height_for_image_mm(geom, src_w, src_h)
-    check_fits_on_cup(geom, design_height_mm)
+    design = design_geometry_for_image(geom, src_w, src_h)
 
-    out_w, out_h = output_size_px(geom.design_width_mm, design_height_mm, px_per_mm)
+    out_w, out_h = output_size_px(geom.design_width_mm, design.height_mm, px_per_mm)
     # fit_cover only has rounding-sized slack to take up here, since out_w:out_h
     # is (by design_height_for_image_mm's construction) already the source's
     # own aspect ratio -- the whole image ends up visible, none of it cropped.
     fitted = fit_cover(image_rgba, out_w, out_h)
-    warped = warp_for_rotary(fitted, geom, out_w, out_h)
+    warped = warp_for_rotary(fitted, design.phi_max_rad, out_w, out_h)
 
     if dither:
         gray = warped[..., :3].astype(np.float64) @ _GRAY_WEIGHTS
@@ -266,4 +301,4 @@ def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
     else:
         out = warped
 
-    return out, out_w, out_h, design_height_mm
+    return out, out_w, out_h, design

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from flask import Flask
 
-from . import feedback, kerf_tool
+from . import deploy, feedback, kerf_tool
 
 TOOLS = [
     {
@@ -51,6 +51,7 @@ def create_app() -> Flask:
     app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024  # 20MB; these are laser-plan SVGs, not photos
     app.register_blueprint(kerf_tool.bp)
     app.register_blueprint(feedback.bp)
+    app.register_blueprint(deploy.bp)
 
     @app.route("/")
     def index():

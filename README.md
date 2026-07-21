@@ -247,6 +247,8 @@ safe to host somewhere other people can reach.
    `application` object, which is why that indirection exists.)
 4. Reload the web app from the **Web** tab. It's now live at
    `yourusername.pythonanywhere.com`.
+5. Set up on-demand redeploys (see **Redeploying** below) so future changes
+   don't need you back in the PythonAnywhere UI at all.
 
 Free-tier PythonAnywhere runs a single worker process, which this app
 assumes — the upload/result store is an in-memory dict, not shared across
@@ -262,15 +264,38 @@ module next to `kerf_tool.py`, give it a `Blueprint` with its own
 `kerf_tool.bp`, and add an entry to `hub.py`'s `TOOLS` list so it gets a
 card on the landing page. No other file needs to change.
 
+**Redeploying:** `kerfcorrector/deploy.py` is a Blueprint exposing a single
+`POST /deploy` route that does the whole redeploy sequence server-side --
+`git pull`, clear `__pycache__`, then reload the web app via
+PythonAnywhere's own API (not the web UI; driving that via browser
+automation proved unreliable -- the reload button can report success
+without the worker actually restarting). Trigger it from your own machine
+with the `deploy.py` script at the repo root: `python deploy.py <secret>`
+(or set the `DEPLOY_SECRET` environment variable and omit the argument).
+It prints a JSON report of each step and exits non-zero on failure.
+
+To set it up, two environment variables need to be set in the WSGI config
+file (same place as `FEEDBACK_ADMIN_PASS`, right before `from wsgi import
+application`):
+```python
+os.environ['DEPLOY_SECRET'] = 'choose-a-real-secret-here'
+os.environ['PYTHONANYWHERE_API_TOKEN'] = 'your-pythonanywhere-api-token'
+```
+Get the API token from **Account → API Token** on PythonAnywhere (generate
+one if you haven't already). Without both variables set, `/deploy` refuses
+to run (503) rather than silently no-op or fall back to something
+unauthenticated. The endpoint itself is unauthenticated to the outside
+world except for `DEPLOY_SECRET` -- treat it like a password.
+
 **Working on more than one tool at once (e.g. two Claude chats in the same
 checkout):** editing in parallel is fine, since each tool lives in its own
-module. Deploying isn't automatically safe to parallelize, though — a
-`git pull` + reload on PythonAnywhere picks up whatever's on `main` at that
-moment, so reloading to ship your own change can also push out someone
-else's still-untested one if it landed on `main` first. Check `git log`
-before you deploy to make sure you know what you're actually shipping, and
-treat push-pull-reload as one uninterrupted sequence rather than starting
-it and walking away mid-deploy.
+module, and sessions can commit/push to `main` independently. What changed
+with the `/deploy` endpoint above is *when* code actually goes live: pushing
+to `main` no longer ships anything by itself, so two sessions racing to
+finish and deploy at the same moment isn't a real problem anymore -- only
+running `python deploy.py` puts whatever's currently on `main` into
+production, and that's a deliberate, human-triggered action, not something
+either session does as a side effect of finishing its own work.
 
 ## Feedback
 

@@ -13,8 +13,9 @@ venv\Scripts\python app.py
 ```
 
 Opens a browser window at a small hub page listing the available tools
-(currently just this one; see "Adding another tool" below for how more get
-added later). Open **Laser Kerf Corrector**, upload an SVG (drag-and-drop
+(this kerf corrector and the Tapered Cup Etching Pattern tool -- see its
+own section below -- with more addable later; see "Adding another tool"
+further down for how). Open **Laser Kerf Corrector**, upload an SVG (drag-and-drop
 or click to choose — nothing is read from or written to disk on the
 server's side, it all stays in memory for your session), then review the
 auto-detected holes/edges and apply. The result comes back
@@ -373,6 +374,64 @@ this ever gets linked somewhere with real volume.
   `member_edges` are the vertex indices of that feature's own edges). An
   unrecognized `kind` or an empty `member_edges` is skipped with a warning
   rather than guessed.
+
+## Tapered Cup Etching Pattern
+
+`kerfcorrector/cup_etch.py` (the math) + `cup_etch_tool.py` (the Blueprint,
+mounted at `/cup-etcher/`) turn a photo or logo into an etching pattern for
+the **front-facing panel** of a tapered cup or glass, meant to be lasered
+with a rotary attachment (the piece spins in place while the laser only
+moves along its length).
+
+**The problem it solves:** a rotary attachment can only do one thing to
+"wrap" an image around a piece -- rotate it a fixed angle for a fixed
+image column, the same at every row. That's a *linear* column-to-angle
+relationship. But viewed straight on, a curved surface doesn't foreshorten
+linearly: it foreshortens hardest right at its own silhouette (the visible
+edges of the piece) and barely at all at its front-center, where the
+surface is nearly tangent to your line of sight. Feed the rotary a plain
+image and the result looks pinched at the edges once you look at the
+finished piece head-on -- exactly like a flat photo taped around a can
+looks warped near the can's own left/right edge. This tool pre-warps the
+source image (an arcsine curve, not a simple linear stretch) so that once
+the rotary's own linear mapping and the surface's own foreshortening are
+both applied, the two cancel out and the finished etching reads as the
+original, undistorted rectangle.
+
+The taper (top diameter vs. bottom diameter) doesn't actually change that
+horizontal correction -- it's driven purely by how much of the
+circumference the design covers (the **wrap angle**), not by the cup's
+absolute size. What the taper *does* determine is the output's physical
+size: the diameter used to convert the rotary's rotation into a real-world
+width is the diameter at the *mid-height* of the design (exactly the
+average of the top and bottom diameters, since the taper is linear) --
+that's the number to enter into your rotary attachment's own calibration
+(LightBurn's "Rotary Setup" or equivalent), and the tool reports it
+alongside the generated pattern so the two stay in sync. Get that number
+wrong (or use a different one than what you calibrated the rotary with)
+and the pattern will be the right shape but the wrong physical size.
+
+Because this corrects a *front-view* effect, it's only defined for a
+front-facing panel, not a full wrap-around design -- there's no single
+"front" once a design covers the entire circumference. The wrap angle is
+capped at 175° for that reason (a value approaching 180° would need
+near-infinite stretching right at the edge, where the surface is exactly
+edge-on to the viewer).
+
+**Using it:** upload an image, enter the cup's bottom/top diameter and the
+design's height (all mm), pick a wrap angle (how much of the circumference
+the front panel covers -- higher covers more of the cup but stretches the
+edges harder), a resolution (pixels/mm), and whether to dither. Dithering
+runs a Floyd-Steinberg error diffusion down to pure black/white, which is
+what makes a continuous-tone photo still show shading once etched (a laser
+can only mark or not mark a given spot) -- leave it off for a logo or line
+art that's already high-contrast. The result comes back as a PNG (alpha
+channel preserved, so a transparent background stays transparent/unetched)
+sized to the exact physical dimensions reported alongside it.
+
+Source images are fit to the output's aspect ratio by scaling up and
+center-cropping (never stretched to fit, and never letterboxed) before the
+warp is applied.
 
 ## Tests
 

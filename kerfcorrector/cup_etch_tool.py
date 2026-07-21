@@ -1,0 +1,343 @@
+"""Tapered-cup etching pattern tool: upload a photo or logo, describe the
+cup's taper and how much of its front-facing circumference the design
+should cover, and get back a flat raster pre-warped (see cup_etch.py for
+the math) so that etching it with a rotary attachment reproduces an
+undistorted, correctly-proportioned image when the finished cup is viewed
+head-on. A Flask Blueprint mounted alongside the other tools (see hub.py);
+follows kerf_tool.py's pattern of in-memory token-keyed upload/result
+storage so it stays safe for public hosting -- nothing touches the
+server's filesystem.
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+import time
+import uuid
+
+import numpy as np
+from flask import Blueprint, Response, jsonify, request
+from PIL import Image
+
+from . import cup_etch
+
+bp = Blueprint("cup_etch_tool", __name__, url_prefix="/cup-etcher")
+
+# token -> {"bytes": bytes, "filename": str, "ts": float}. Same in-memory,
+# single-process, bounded store as kerf_tool.py -- see its comment for why
+# that's the right tradeoff here (safe for a single-worker free-tier host,
+# nothing persists across a restart, and nothing needs to).
+_UPLOADS: dict[str, dict] = {}
+_MAX_UPLOADS = 40
+
+
+def _store(data: bytes, filename: str) -> str:
+    token = uuid.uuid4().hex
+    _UPLOADS[token] = {"bytes": data, "filename": filename, "ts": time.time()}
+    if len(_UPLOADS) > _MAX_UPLOADS:
+        oldest = min(_UPLOADS, key=lambda k: _UPLOADS[k]["ts"])
+        del _UPLOADS[oldest]
+    return token
+
+
+def _load_image_array(token: str) -> np.ndarray:
+    entry = _UPLOADS.get(token)
+    if entry is None:
+        raise KeyError("That upload has expired or the server restarted -- please upload the image again.")
+    img = Image.open(io.BytesIO(entry["bytes"])).convert("RGBA")
+    return np.array(img)
+
+
+PAGE = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tapered cup etching pattern</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #1e1e1e; color: #ddd; }
+  #topbar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #262626; border-bottom: 1px solid #444; }
+  #topbar h1 { font-size: 14px; margin: 0; font-weight: 600; }
+  #topbar h1 a { color: #ddd; text-decoration: none; }
+  #topbar .file { font-size: 12px; color: #9c9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  #topbar a.action { color: #6cf; font-size: 12px; cursor: pointer; text-decoration: none; }
+  body { padding: 0; }
+  #body { display: flex; height: calc(100% - 41px); overflow: hidden; }
+  #screen-pick { padding: 20px; max-width: 560px; margin: 40px auto; overflow-y: auto; }
+  #screen-pick p { font-size: 13px; color: #aaa; line-height: 1.5; }
+  #drop-zone { border: 2px dashed #444; border-radius: 8px; padding: 40px 20px; text-align: center; cursor: pointer; margin-top: 16px; }
+  #drop-zone:hover, #drop-zone.dragover { border-color: #6cf; background: #232733; }
+  #drop-zone .hint { font-size: 12px; color: #888; margin-top: 8px; }
+  #upload-status { margin-top: 14px; font-size: 13px; }
+  #upload-status.err { color: #f88; }
+  .btn { background: #3c6e96; color: white; border: none; padding: 8px 14px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .btn:hover { background: #4a84b3; }
+  .btn:disabled { background: #333; color: #777; cursor: default; }
+  #panel { width: 360px; flex: none; background: #262626; border-right: 1px solid #444; overflow-y: auto; padding: 16px; box-sizing: border-box; }
+  #panel label { display: block; font-size: 12px; color: #aaa; margin: 12px 0 3px; }
+  #panel label .unit { color: #777; }
+  #panel input[type=number] { width: 100%; box-sizing: border-box; background: #2a2a2a; border: 1px solid #444; color: #ddd; padding: 7px; border-radius: 4px; font-size: 13px; }
+  #panel input[type=range] { width: 100%; }
+  #panel .row2 { display: flex; gap: 10px; }
+  #panel .row2 > div { flex: 1; }
+  #panel .check { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; font-size: 12px; color: #ccc; }
+  #panel .check input { width: auto; }
+  #panel .sub { font-size: 11px; color: #888; margin: 4px 0 0; line-height: 1.4; }
+  #panel .actions { margin-top: 18px; }
+  #wrap-angle-value { color: #8fd0ff; font-weight: 600; }
+  #preview-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  #preview-canvas-wrap { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto;
+    background-image: linear-gradient(45deg, #333 25%, transparent 25%), linear-gradient(-45deg, #333 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #333 75%), linear-gradient(-45deg, transparent 75%, #333 75%);
+    background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; background-color: #444; }
+  #preview-canvas-wrap img { max-width: 90%; max-height: 90%; box-shadow: 0 4px 24px rgba(0,0,0,0.5); }
+  #preview-placeholder { color: #888; font-size: 13px; text-align: center; padding: 40px; }
+  #result-info { padding: 14px 16px; background: #262626; border-top: 1px solid #444; font-size: 12px; line-height: 1.6; }
+  #result-info .err { color: #f88; }
+  #result-info b { color: #8fd0ff; }
+  #result-info a.download { display: inline-block; margin-top: 8px; color: #6cf; }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <h1><a href="__HUB_URL__">&larr; Tools</a> / Tapered cup etching pattern</h1>
+  <div class="file" id="topbar-file"></div>
+  <a class="action" id="change-file" style="display:none">upload a different image</a>
+  <a class="action" href="/feedback/?tool=Tapered%20Cup%20Etching%20Pattern" target="_blank">report a bug / suggest a feature</a>
+</div>
+
+<div id="screen-pick" class="screen">
+  <p>Turns a photo or logo into an etching pattern for the <b>front-facing
+  panel</b> of a tapered cup or glass, warped so that once it's etched
+  using a rotary attachment (which spins the piece in place while the
+  laser only moves along its length), the finished etching looks like the
+  original, undistorted image when the piece is viewed head-on -- not
+  pinched at the edges the way a plain wrap would look on a curved
+  surface. Upload a PNG or JPG to get started; nothing is stored beyond
+  this session.</p>
+  <div id="drop-zone">
+    <div>Drop an image here, or click to choose one</div>
+    <div class="hint">PNG (with transparency) or JPG</div>
+    <input type="file" id="file-input" accept="image/*" style="display:none">
+  </div>
+  <div id="upload-status"></div>
+</div>
+
+<div id="body" style="display:none">
+  <div id="panel">
+    <label>Bottom diameter <span class="unit">(mm)</span></label>
+    <input type="number" id="p-bottom" value="80" step="0.5" min="1">
+    <label>Top diameter <span class="unit">(mm)</span></label>
+    <input type="number" id="p-top" value="70" step="0.5" min="1">
+    <div class="sub">Diameters of the cup at the bottom and top of the
+    design area -- doesn't have to be the whole cup, just the band being
+    etched.</div>
+
+    <label>Design height <span class="unit">(mm)</span></label>
+    <input type="number" id="p-height" value="80" step="0.5" min="1">
+
+    <label>Front wrap angle: <span id="wrap-angle-value">140</span>&deg;</label>
+    <input type="range" id="p-wrap" min="20" max="170" step="1" value="140">
+    <div class="sub">How much of the circumference the design covers,
+    centered on the front. Higher covers more of the cup but stretches the
+    edges more (viewed from the front, a curved surface always foreshortens
+    hardest right at its own silhouette) -- 170&deg; is close to the
+    physical limit, not a validation quirk.</div>
+
+    <label>Resolution <span class="unit">(pixels/mm)</span></label>
+    <input type="number" id="p-dpm" value="6" step="0.5" min="1" max="20">
+    <div class="sub">~6 px/mm &asymp; 150 DPI. Higher looks sharper but
+    dithering (below) gets slower on big images.</div>
+
+    <div class="check">
+      <input type="checkbox" id="p-dither" checked>
+      <label for="p-dither" style="margin:0">Dither for photo engraving</label>
+    </div>
+    <div class="sub">Error-diffusion dither to pure black/white, so a
+    continuous-tone photo still shows shading once etched (a laser can
+    only mark or not mark a spot). Leave off for a logo or line art that's
+    already high-contrast.</div>
+
+    <div class="actions">
+      <button class="btn" id="generate">Generate pattern</button>
+    </div>
+  </div>
+
+  <div id="preview-area">
+    <div id="preview-canvas-wrap">
+      <div id="preview-placeholder">Set the cup's dimensions and click "Generate pattern".</div>
+    </div>
+    <div id="result-info"></div>
+  </div>
+</div>
+
+<script>
+const API = '__API_PREFIX__';
+let uploadToken = null, uploadFilename = null;
+
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+});
+
+async function uploadFile(file) {
+  const status = document.getElementById('upload-status');
+  status.className = '';
+  status.textContent = 'Uploading...';
+  const form = new FormData();
+  form.append('file', file);
+  const resp = await fetch(API + '/api/upload', { method: 'POST', body: form });
+  const data = await resp.json();
+  if (!resp.ok) {
+    status.className = 'err';
+    status.textContent = 'Error: ' + (data.error || resp.statusText);
+    return;
+  }
+  status.textContent = '';
+  uploadToken = data.token;
+  uploadFilename = data.filename;
+  document.getElementById('topbar-file').textContent = uploadFilename;
+  document.getElementById('change-file').style.display = 'inline';
+  document.getElementById('screen-pick').style.display = 'none';
+  document.getElementById('body').style.display = 'flex';
+}
+document.getElementById('change-file').addEventListener('click', () => {
+  fileInput.value = '';
+  document.getElementById('upload-status').textContent = '';
+  document.getElementById('body').style.display = 'none';
+  document.getElementById('screen-pick').style.display = 'block';
+});
+
+const wrapSlider = document.getElementById('p-wrap');
+wrapSlider.addEventListener('input', () => {
+  document.getElementById('wrap-angle-value').textContent = wrapSlider.value;
+});
+
+document.getElementById('generate').addEventListener('click', async () => {
+  const info = document.getElementById('result-info');
+  const btn = document.getElementById('generate');
+  btn.disabled = true;
+  info.innerHTML = 'Generating...';
+  const body = {
+    token: uploadToken,
+    bottom_diameter_mm: parseFloat(document.getElementById('p-bottom').value),
+    top_diameter_mm: parseFloat(document.getElementById('p-top').value),
+    height_mm: parseFloat(document.getElementById('p-height').value),
+    wrap_angle_deg: parseFloat(document.getElementById('p-wrap').value),
+    px_per_mm: parseFloat(document.getElementById('p-dpm').value),
+    dither: document.getElementById('p-dither').checked,
+  };
+  let resp, data;
+  try {
+    resp = await fetch(API + '/api/generate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    data = await resp.json();
+  } catch (e) {
+    btn.disabled = false;
+    info.innerHTML = '<span class="err">Error: request failed.</span>';
+    return;
+  }
+  btn.disabled = false;
+  if (!resp.ok) {
+    info.innerHTML = '<span class="err">Error: ' + (data.error || resp.statusText) + '</span>';
+    return;
+  }
+  const wrap = document.getElementById('preview-canvas-wrap');
+  wrap.innerHTML = '';
+  const img = document.createElement('img');
+  img.src = data.preview_data_url;
+  wrap.appendChild(img);
+
+  info.innerHTML =
+    `Output: <b>${data.output_w}&times;${data.output_h}px</b> ` +
+    `(<b>${data.output_width_mm.toFixed(1)}mm &times; ${data.output_height_mm.toFixed(1)}mm</b>)<br>` +
+    `Set your rotary attachment's object/roller diameter to <b>${data.reference_diameter_mm.toFixed(1)}mm</b> ` +
+    `to match this pattern (the diameter at the design's mid-height).`;
+  const link = document.createElement('a');
+  link.className = 'download';
+  link.href = API + '/api/download/' + data.download_token;
+  link.textContent = 'Download ' + data.download_name;
+  link.setAttribute('download', data.download_name);
+  info.appendChild(link);
+});
+</script>
+</body>
+</html>
+"""
+
+
+@bp.route("/")
+def index():
+    return PAGE.replace("__HUB_URL__", "/").replace("__API_PREFIX__", bp.url_prefix)
+
+
+@bp.route("/api/upload", methods=["POST"])
+def upload():
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        return jsonify({"error": "No file received."}), 400
+    data = f.read()
+    try:
+        Image.open(io.BytesIO(data)).verify()  # validate it actually decodes before accepting
+    except Exception as e:
+        return jsonify({"error": f"Could not read that as an image: {e}"}), 400
+    token = _store(data, f.filename)
+    return jsonify({"token": token, "filename": f.filename})
+
+
+@bp.route("/api/generate", methods=["POST"])
+def generate():
+    body = request.get_json(force=True)
+    try:
+        geom = cup_etch.CupGeometry(
+            bottom_diameter_mm=float(body["bottom_diameter_mm"]),
+            top_diameter_mm=float(body["top_diameter_mm"]),
+            height_mm=float(body["height_mm"]),
+            wrap_angle_deg=float(body["wrap_angle_deg"]),
+        )
+        px_per_mm = float(body["px_per_mm"])
+        if not (0.1 <= px_per_mm <= 50):
+            raise ValueError("Resolution must be between 0.1 and 50 pixels/mm.")
+        source = _load_image_array(body["token"])
+        out, out_w, out_h = cup_etch.build_pattern(source, geom, px_per_mm, bool(body.get("dither")))
+    except (KeyError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+
+    png_bytes = _encode_png(out)
+    base = _UPLOADS[body["token"]]["filename"].rsplit(".", 1)[0]
+    download_name = f"{base}.etch-pattern.png"
+    download_token = _store(png_bytes, download_name)
+    preview_data_url = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+
+    return jsonify({
+        "output_w": out_w,
+        "output_h": out_h,
+        "output_width_mm": geom.output_width_mm,
+        "output_height_mm": geom.output_height_mm,
+        "reference_diameter_mm": geom.reference_diameter_mm,
+        "preview_data_url": preview_data_url,
+        "download_token": download_token,
+        "download_name": download_name,
+    })
+
+
+def _encode_png(rgba: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@bp.route("/api/download/<token>")
+def download(token):
+    entry = _UPLOADS.get(token)
+    if entry is None:
+        return "That download has expired -- please generate the pattern again.", 404
+    resp = Response(entry["bytes"], mimetype="image/png")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{entry["filename"]}"'
+    return resp

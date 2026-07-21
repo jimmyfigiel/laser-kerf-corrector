@@ -51,38 +51,89 @@ from PIL import Image
 
 MAX_OUTPUT_PX = 2200  # keeps Floyd-Steinberg (a per-pixel Python loop) responsive
 
+MAX_WRAP_ANGLE_DEG = 175.0  # see design_width_mm's validation below for why
+_MAX_SIN_PHI_MAX = math.sin(math.radians(MAX_WRAP_ANGLE_DEG / 2.0))
+
 
 @dataclass
 class CupGeometry:
-    bottom_diameter_mm: float
-    top_diameter_mm: float
-    height_mm: float
-    wrap_angle_deg: float
+    """All four inputs are things you can measure directly on a real cup
+    with a soft tape measure and no math: wrap the tape around the top and
+    bottom rims for the two circumferences, and lay it flat along the
+    tapered side from the bottom rim to the top rim for the side length
+    (the true along-the-surface slant distance, not the vertical height
+    between rims -- that's not directly measurable without already knowing
+    the taper). The design's own axial height and how much of the
+    circumference it covers are both derived, not entered separately -- see
+    height_mm and phi_max_rad below."""
+
+    bottom_circumference_mm: float
+    top_circumference_mm: float
+    side_length_mm: float
+    design_width_mm: float
 
     def __post_init__(self):
-        if self.bottom_diameter_mm <= 0 or self.top_diameter_mm <= 0:
-            raise ValueError("Diameters must be positive.")
-        if self.height_mm <= 0:
-            raise ValueError("Design height must be positive.")
-        if not (1.0 <= self.wrap_angle_deg <= 175.0):
-            raise ValueError("Wrap angle must be between 1 and 175 degrees "
-                              "(this is a front-facing panel, not a full wrap-around).")
+        if self.bottom_circumference_mm <= 0 or self.top_circumference_mm <= 0:
+            raise ValueError("Circumferences must be positive.")
+        if self.side_length_mm <= 0:
+            raise ValueError("Side length must be positive.")
+        if self.design_width_mm <= 0:
+            raise ValueError("Design width must be positive.")
+
+        delta_r = abs(self.bottom_radius_mm - self.top_radius_mm)
+        if self.side_length_mm <= delta_r:
+            raise ValueError(
+                f"A side length of {self.side_length_mm:g}mm is too short for this much taper -- "
+                f"it has to be more than the difference in the two radii ({delta_r:.1f}mm), or "
+                "a straight side of that length can't reach between the two rims."
+            )
+
+        max_width = self.reference_diameter_mm * _MAX_SIN_PHI_MAX
+        if self.design_width_mm >= max_width:
+            raise ValueError(
+                f"Design width ({self.design_width_mm:g}mm) is too close to the cup's own "
+                f"mid-height diameter ({self.reference_diameter_mm:.1f}mm) -- keep it under "
+                f"{max_width:.1f}mm, or the edges would need near-infinite stretching (a front "
+                "view can never be wider than the diameter itself)."
+            )
 
     @property
-    def phi_max_rad(self) -> float:
-        return math.radians(self.wrap_angle_deg / 2.0)
+    def bottom_radius_mm(self) -> float:
+        return self.bottom_circumference_mm / (2 * math.pi)
+
+    @property
+    def top_radius_mm(self) -> float:
+        return self.top_circumference_mm / (2 * math.pi)
 
     @property
     def reference_diameter_mm(self) -> float:
         # Linear taper -> the mid-height diameter is exactly the average of
-        # the two rim diameters. This is the diameter to enter into the
-        # rotary attachment's own calibration, since it's the one the
-        # output's physical width below is computed from.
-        return (self.bottom_diameter_mm + self.top_diameter_mm) / 2.0
+        # the two rim diameters, i.e. (d_bot+d_top)/2 == r_bot+r_top. This
+        # is the diameter to enter into the rotary attachment's own
+        # calibration, since it's the one the output's physical width below
+        # is computed from.
+        return self.bottom_radius_mm + self.top_radius_mm
+
+    @property
+    def height_mm(self) -> float:
+        # The side length is the slant (along-the-surface) distance between
+        # the rims; together with the difference in radii it forms a right
+        # triangle whose other leg is the axial height actually needed for
+        # the rotary's linear travel.
+        delta_r = self.bottom_radius_mm - self.top_radius_mm
+        return math.sqrt(self.side_length_mm ** 2 - delta_r ** 2)
+
+    @property
+    def phi_max_rad(self) -> float:
+        return math.asin(self.design_width_mm / self.reference_diameter_mm)
+
+    @property
+    def wrap_angle_deg(self) -> float:
+        return math.degrees(self.phi_max_rad) * 2.0
 
     @property
     def output_width_mm(self) -> float:
-        return self.reference_diameter_mm * math.sin(self.phi_max_rad)
+        return self.design_width_mm
 
     @property
     def output_height_mm(self) -> float:

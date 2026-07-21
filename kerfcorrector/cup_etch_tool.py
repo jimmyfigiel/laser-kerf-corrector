@@ -84,7 +84,9 @@ PAGE = """<!doctype html>
   #panel .check input { width: auto; }
   #panel .sub { font-size: 11px; color: #888; margin: 4px 0 0; line-height: 1.4; }
   #panel .actions { margin-top: 18px; }
-  #wrap-angle-value { color: #8fd0ff; font-weight: 600; }
+  #computed-geom { margin: 14px 0; padding: 10px 12px; background: #202020; border: 1px solid #383838; border-radius: 6px; line-height: 1.6; }
+  #computed-geom b { color: #8fd0ff; }
+  #computed-geom .err { color: #f88; }
   #preview-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   #preview-canvas-wrap { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto;
     background-image: linear-gradient(45deg, #333 25%, transparent 25%), linear-gradient(-45deg, #333 25%, transparent 25%),
@@ -125,24 +127,27 @@ PAGE = """<!doctype html>
 
 <div id="body" style="display:none">
   <div id="panel">
-    <label>Bottom diameter <span class="unit">(mm)</span></label>
-    <input type="number" id="p-bottom" value="80" step="0.5" min="1">
-    <label>Top diameter <span class="unit">(mm)</span></label>
-    <input type="number" id="p-top" value="70" step="0.5" min="1">
-    <div class="sub">Diameters of the cup at the bottom and top of the
-    design area -- doesn't have to be the whole cup, just the band being
-    etched.</div>
+    <label>Bottom circumference <span class="unit">(mm)</span></label>
+    <input type="number" id="p-bottom-circ" value="207" step="1" min="1">
+    <label>Top circumference <span class="unit">(mm)</span></label>
+    <input type="number" id="p-top-circ" value="285" step="1" min="1">
+    <div class="sub">Wrap a tape measure around the rim at the bottom and
+    top of the design area -- doesn't have to be the whole cup, just the
+    band being etched.</div>
 
-    <label>Design height <span class="unit">(mm)</span></label>
-    <input type="number" id="p-height" value="80" step="0.5" min="1">
+    <label>Side length <span class="unit">(mm)</span></label>
+    <input type="number" id="p-side" value="158" step="1" min="1">
+    <div class="sub">Lay the tape flat along the tapered side, from the
+    bottom rim straight up to the top rim -- not the vertical height, which
+    isn't directly measurable without already knowing the taper.</div>
 
-    <label>Front wrap angle: <span id="wrap-angle-value">140</span>&deg;</label>
-    <input type="range" id="p-wrap" min="20" max="170" step="1" value="140">
-    <div class="sub">How much of the circumference the design covers,
-    centered on the front. Higher covers more of the cup but stretches the
-    edges more (viewed from the front, a curved surface always foreshortens
-    hardest right at its own silhouette) -- 170&deg; is close to the
-    physical limit, not a validation quirk.</div>
+    <label>Design width <span class="unit">(mm)</span></label>
+    <input type="number" id="p-width" value="60" step="1" min="1">
+    <div class="sub">How wide the finished etching should look, viewed
+    head-on. The design's height is calculated from the geometry above, not
+    entered separately.</div>
+
+    <div id="computed-geom" class="sub"></div>
 
     <label>Resolution <span class="unit">(pixels/mm)</span></label>
     <input type="number" id="p-dpm" value="6" step="0.5" min="1" max="20">
@@ -215,10 +220,47 @@ document.getElementById('change-file').addEventListener('click', () => {
   document.getElementById('screen-pick').style.display = 'block';
 });
 
-const wrapSlider = document.getElementById('p-wrap');
-wrapSlider.addEventListener('input', () => {
-  document.getElementById('wrap-angle-value').textContent = wrapSlider.value;
-});
+// Mirrors CupGeometry's own formulas (see cup_etch.py) purely so the user
+// gets instant feedback on the calculated height/coverage/rotary-diameter
+// while typing, without a round trip -- the actual pattern generation
+// below still goes through the real Python geometry class, which is the
+// authority (including its own validation) on whether these numbers work.
+function computeGeometryPreview() {
+  const bottomCirc = parseFloat(document.getElementById('p-bottom-circ').value);
+  const topCirc = parseFloat(document.getElementById('p-top-circ').value);
+  const side = parseFloat(document.getElementById('p-side').value);
+  const width = parseFloat(document.getElementById('p-width').value);
+  const out = document.getElementById('computed-geom');
+
+  if (![bottomCirc, topCirc, side, width].every(v => Number.isFinite(v) && v > 0)) {
+    out.innerHTML = '';
+    return;
+  }
+  const bottomR = bottomCirc / (2 * Math.PI);
+  const topR = topCirc / (2 * Math.PI);
+  const refDiameter = bottomR + topR;
+  const deltaR = bottomR - topR;
+  const discriminant = side * side - deltaR * deltaR;
+  if (discriminant <= 0) {
+    out.innerHTML = `<span class="err">Side length is too short for this much taper -- ` +
+      `it must be more than ${Math.abs(deltaR).toFixed(1)}mm.</span>`;
+    return;
+  }
+  const height = Math.sqrt(discriminant);
+  const maxWidth = refDiameter * Math.sin(87.5 * Math.PI / 180);
+  if (width >= maxWidth) {
+    out.innerHTML = `<span class="err">Design width must stay under ${maxWidth.toFixed(1)}mm ` +
+      `for this cup (can't reach the ${refDiameter.toFixed(1)}mm mid-height diameter).</span>`;
+    return;
+  }
+  const wrapAngle = 2 * Math.asin(width / refDiameter) * 180 / Math.PI;
+  out.innerHTML = `Calculated design height: <b>${height.toFixed(1)}mm</b><br>` +
+    `Mid-height (rotary calibration) diameter: <b>${refDiameter.toFixed(1)}mm</b><br>` +
+    `Front coverage: <b>${wrapAngle.toFixed(0)}&deg;</b>`;
+}
+['p-bottom-circ', 'p-top-circ', 'p-side', 'p-width'].forEach(id =>
+  document.getElementById(id).addEventListener('input', computeGeometryPreview));
+computeGeometryPreview();
 
 document.getElementById('generate').addEventListener('click', async () => {
   const info = document.getElementById('result-info');
@@ -227,10 +269,10 @@ document.getElementById('generate').addEventListener('click', async () => {
   info.innerHTML = 'Generating...';
   const body = {
     token: uploadToken,
-    bottom_diameter_mm: parseFloat(document.getElementById('p-bottom').value),
-    top_diameter_mm: parseFloat(document.getElementById('p-top').value),
-    height_mm: parseFloat(document.getElementById('p-height').value),
-    wrap_angle_deg: parseFloat(document.getElementById('p-wrap').value),
+    bottom_circumference_mm: parseFloat(document.getElementById('p-bottom-circ').value),
+    top_circumference_mm: parseFloat(document.getElementById('p-top-circ').value),
+    side_length_mm: parseFloat(document.getElementById('p-side').value),
+    design_width_mm: parseFloat(document.getElementById('p-width').value),
     px_per_mm: parseFloat(document.getElementById('p-dpm').value),
     dither: document.getElementById('p-dither').checked,
   };
@@ -256,7 +298,8 @@ document.getElementById('generate').addEventListener('click', async () => {
 
   info.innerHTML =
     `Output: <b>${data.output_w}&times;${data.output_h}px</b> ` +
-    `(<b>${data.output_width_mm.toFixed(1)}mm &times; ${data.output_height_mm.toFixed(1)}mm</b>)<br>` +
+    `(<b>${data.output_width_mm.toFixed(1)}mm &times; ${data.output_height_mm.toFixed(1)}mm</b>, ` +
+    `${data.wrap_angle_deg.toFixed(0)}&deg; front coverage)<br>` +
     `Set your rotary attachment's object/roller diameter to <b>${data.reference_diameter_mm.toFixed(1)}mm</b> ` +
     `to match this pattern (the diameter at the design's mid-height).`;
   const link = document.createElement('a');
@@ -296,10 +339,10 @@ def generate():
     body = request.get_json(force=True)
     try:
         geom = cup_etch.CupGeometry(
-            bottom_diameter_mm=float(body["bottom_diameter_mm"]),
-            top_diameter_mm=float(body["top_diameter_mm"]),
-            height_mm=float(body["height_mm"]),
-            wrap_angle_deg=float(body["wrap_angle_deg"]),
+            bottom_circumference_mm=float(body["bottom_circumference_mm"]),
+            top_circumference_mm=float(body["top_circumference_mm"]),
+            side_length_mm=float(body["side_length_mm"]),
+            design_width_mm=float(body["design_width_mm"]),
         )
         px_per_mm = float(body["px_per_mm"])
         if not (0.1 <= px_per_mm <= 50):
@@ -321,6 +364,7 @@ def generate():
         "output_width_mm": geom.output_width_mm,
         "output_height_mm": geom.output_height_mm,
         "reference_diameter_mm": geom.reference_diameter_mm,
+        "wrap_angle_deg": geom.wrap_angle_deg,
         "preview_data_url": preview_data_url,
         "download_token": download_token,
         "download_name": download_name,

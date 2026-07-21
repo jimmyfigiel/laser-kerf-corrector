@@ -418,16 +418,28 @@ capped at 175° for that reason (a value approaching 180° would need
 near-infinite stretching right at the edge, where the surface is exactly
 edge-on to the viewer).
 
-**Using it:** upload an image, enter the cup's bottom/top diameter and the
-design's height (all mm), pick a wrap angle (how much of the circumference
-the front panel covers -- higher covers more of the cup but stretches the
-edges harder), a resolution (pixels/mm), and whether to dither. Dithering
-runs a Floyd-Steinberg error diffusion down to pure black/white, which is
-what makes a continuous-tone photo still show shading once etched (a laser
-can only mark or not mark a given spot) -- leave it off for a logo or line
-art that's already high-contrast. The result comes back as a PNG (alpha
-channel preserved, so a transparent background stays transparent/unetched)
-sized to the exact physical dimensions reported alongside it.
+**Using it:** the four cup-geometry inputs are chosen to be things you can
+measure directly with a soft tape measure, no math required -- wrap it
+around the rim at the bottom and top of the design area for the two
+**circumferences**, and lay it flat along the tapered side from the bottom
+rim straight up to the top rim for the **side length**. That last one is
+deliberately the slant distance along the surface, not the vertical height
+between the rims -- the vertical height isn't something you can measure
+directly without already knowing the taper, whereas the side length is
+just a straight tape measurement. From those three (which fully describe
+the frustum) plus a **design width** (how wide the finished etching should
+look, viewed head-on), the tool derives everything else: the design's own
+axial height (the other leg of the right triangle the side length and the
+difference in radii form), the wrap angle, and the mid-height/rotary
+diameter -- there's a live-updating readout of all three as you type,
+before you even upload an image. Also pick a resolution (pixels/mm) and
+whether to dither. Dithering runs a Floyd-Steinberg error diffusion down to
+pure black/white, which is what makes a continuous-tone photo still show
+shading once etched (a laser can only mark or not mark a given spot) --
+leave it off for a logo or line art that's already high-contrast. The
+result comes back as a PNG (alpha channel preserved, so a transparent
+background stays transparent/unetched) sized to the exact physical
+dimensions reported alongside it.
 
 Source images are fit to the output's aspect ratio by scaling up and
 center-cropping (never stretched to fit, and never letterboxed) before the

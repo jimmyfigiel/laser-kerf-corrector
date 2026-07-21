@@ -16,6 +16,7 @@ import hmac
 import os
 import shutil
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -32,8 +33,8 @@ PA_DOMAIN = os.environ.get("PA_DOMAIN", "makertools.pythonanywhere.com")
 PA_API_TOKEN = os.environ.get("PYTHONANYWHERE_API_TOKEN")
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=REPO_DIR, capture_output=True, text=True, timeout=60)
+def _run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, cwd=REPO_DIR, capture_output=True, text=True, timeout=timeout)
 
 
 def _clear_pycache() -> int:
@@ -71,6 +72,24 @@ def deploy():
     pull = _run(["git", "pull"])
     steps["git_pull"] = {"ok": pull.returncode == 0, "stdout": pull.stdout.strip(), "stderr": pull.stderr.strip()}
     if pull.returncode != 0:
+        return jsonify({"ok": False, "steps": steps}), 500
+
+    # A commit that adds a new dependency to requirements.txt without this
+    # step would otherwise crash the WSGI app on its next import (a real
+    # incident: cup_etch_tool.py started importing PIL the moment Pillow
+    # landed in requirements.txt, but nothing had installed it into this
+    # venv) -- and once the app is crashing, /deploy itself is unreachable
+    # to fix it, since the whole WSGI object fails before any route
+    # registers. Running this on every deploy, not just when requirements.txt
+    # changed, is deliberate: pip no-ops quickly when everything's already
+    # satisfied, so the cost of checking is low next to the cost of missing it.
+    pip_install = _run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], timeout=300)
+    steps["pip_install"] = {
+        "ok": pip_install.returncode == 0,
+        "stdout": pip_install.stdout.strip()[-2000:],
+        "stderr": pip_install.stderr.strip()[-2000:],
+    }
+    if pip_install.returncode != 0:
         return jsonify({"ok": False, "steps": steps}), 500
 
     steps["pycache_cleared"] = _clear_pycache()

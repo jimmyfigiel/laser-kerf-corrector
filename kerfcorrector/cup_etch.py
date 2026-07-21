@@ -115,11 +115,15 @@ class CupGeometry:
         return self.bottom_radius_mm + self.top_radius_mm
 
     @property
-    def height_mm(self) -> float:
+    def available_height_mm(self) -> float:
         # The side length is the slant (along-the-surface) distance between
         # the rims; together with the difference in radii it forms a right
-        # triangle whose other leg is the axial height actually needed for
-        # the rotary's linear travel.
+        # triangle whose other leg is the axial height actually available
+        # for a design on this cup's tapered side. This bounds how tall a
+        # design can be (see design_height_for_image below) -- it isn't
+        # itself the design's height, since the design is scaled to fit the
+        # chosen width while keeping the source image's own proportions,
+        # not stretched/cropped to fill this available height.
         delta_r = self.bottom_radius_mm - self.top_radius_mm
         return math.sqrt(self.side_length_mm ** 2 - delta_r ** 2)
 
@@ -131,18 +135,27 @@ class CupGeometry:
     def wrap_angle_deg(self) -> float:
         return math.degrees(self.phi_max_rad) * 2.0
 
-    @property
-    def output_width_mm(self) -> float:
-        return self.design_width_mm
 
-    @property
-    def output_height_mm(self) -> float:
-        return self.height_mm
+def design_height_for_image_mm(geom: CupGeometry, src_w: int, src_h: int) -> float:
+    """The physical height the design occupies once the source image is
+    scaled -- preserving its own aspect ratio, never cropped or stretched
+    -- to the chosen design width."""
+    return geom.design_width_mm * src_h / src_w
 
 
-def output_size_px(geom: CupGeometry, px_per_mm: float) -> tuple[int, int]:
-    w = max(1, round(geom.output_width_mm * px_per_mm))
-    h = max(1, round(geom.output_height_mm * px_per_mm))
+def check_fits_on_cup(geom: CupGeometry, design_height_mm: float) -> None:
+    if design_height_mm > geom.available_height_mm:
+        raise ValueError(
+            f"At a design width of {geom.design_width_mm:g}mm, this image would be "
+            f"{design_height_mm:.1f}mm tall -- taller than the {geom.available_height_mm:.1f}mm "
+            "available along this cup's side. Use a narrower design width, or an image with a "
+            "wider (less tall-and-narrow) aspect ratio."
+        )
+
+
+def output_size_px(width_mm: float, height_mm: float, px_per_mm: float) -> tuple[int, int]:
+    w = max(1, round(width_mm * px_per_mm))
+    h = max(1, round(height_mm * px_per_mm))
     if max(w, h) > MAX_OUTPUT_PX:
         scale = MAX_OUTPUT_PX / max(w, h)
         w = max(1, round(w * scale))
@@ -233,9 +246,16 @@ _GRAY_WEIGHTS = np.array([0.299, 0.587, 0.114])
 
 
 def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
-                   dither: bool) -> tuple[np.ndarray, int, int]:
-    """Returns (rgba_uint8_array, out_w, out_h)."""
-    out_w, out_h = output_size_px(geom, px_per_mm)
+                   dither: bool) -> tuple[np.ndarray, int, int, float]:
+    """Returns (rgba_uint8_array, out_w, out_h, design_height_mm)."""
+    src_h, src_w = image_rgba.shape[:2]
+    design_height_mm = design_height_for_image_mm(geom, src_w, src_h)
+    check_fits_on_cup(geom, design_height_mm)
+
+    out_w, out_h = output_size_px(geom.design_width_mm, design_height_mm, px_per_mm)
+    # fit_cover only has rounding-sized slack to take up here, since out_w:out_h
+    # is (by design_height_for_image_mm's construction) already the source's
+    # own aspect ratio -- the whole image ends up visible, none of it cropped.
     fitted = fit_cover(image_rgba, out_w, out_h)
     warped = warp_for_rotary(fitted, geom, out_w, out_h)
 
@@ -246,4 +266,4 @@ def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
     else:
         out = warped
 
-    return out, out_w, out_h
+    return out, out_w, out_h, design_height_mm

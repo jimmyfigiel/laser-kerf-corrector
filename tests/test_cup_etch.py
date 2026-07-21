@@ -39,12 +39,12 @@ def test_reference_diameter_is_average_of_rims():
     assert geom.reference_diameter_mm == pytest.approx(70)
 
 
-def test_height_derived_from_side_length_and_taper():
+def test_available_height_derived_from_side_length_and_taper():
     # A cup with a 20mm radius difference and a 100mm axial height has a
     # side length of hypot(100, 20) by construction (see _geom) -- check
-    # the height_mm property correctly inverts that back to ~100mm.
+    # the available_height_mm property correctly inverts that back to ~100mm.
     geom = _geom(bottom_diameter=100, top_diameter=60, height=100)
-    assert geom.height_mm == pytest.approx(100, abs=1e-6)
+    assert geom.available_height_mm == pytest.approx(100, abs=1e-6)
 
 
 def test_wrap_angle_deg_matches_design_width_used_to_build_it():
@@ -101,16 +101,38 @@ def test_design_width_too_close_to_diameter_rejected():
 # ---------------------------------------------------------------------------
 
 def test_output_size_matches_physical_dimensions_at_given_resolution():
-    geom = _geom()
-    w, h = cup_etch.output_size_px(geom, px_per_mm=5)
-    assert w == round(geom.output_width_mm * 5)
-    assert h == round(geom.output_height_mm * 5)
+    w, h = cup_etch.output_size_px(width_mm=60, height_mm=30, px_per_mm=5)
+    assert w == round(60 * 5)
+    assert h == round(30 * 5)
 
 
 def test_output_size_capped_to_keep_dither_responsive():
-    geom = _geom(bottom_diameter=800, top_diameter=600, height=1000)
-    w, h = cup_etch.output_size_px(geom, px_per_mm=20)
+    w, h = cup_etch.output_size_px(width_mm=600, height_mm=1000, px_per_mm=20)
     assert max(w, h) <= cup_etch.MAX_OUTPUT_PX
+
+
+# ---------------------------------------------------------------------------
+# design_height_for_image_mm / check_fits_on_cup
+# ---------------------------------------------------------------------------
+
+def test_design_height_for_image_mm_preserves_source_aspect_ratio():
+    geom = cup_etch.CupGeometry(
+        bottom_circumference_mm=80 * math.pi, top_circumference_mm=60 * math.pi,
+        side_length_mm=100, design_width_mm=60,
+    )
+    # A 400x200 (2:1) source scaled to a 60mm design width should come out 30mm tall.
+    assert cup_etch.design_height_for_image_mm(geom, src_w=400, src_h=200) == pytest.approx(30)
+
+
+def test_check_fits_on_cup_rejects_a_design_taller_than_the_available_side():
+    geom = _geom(height=50)
+    with pytest.raises(ValueError, match="taller than"):
+        cup_etch.check_fits_on_cup(geom, design_height_mm=geom.available_height_mm + 10)
+
+
+def test_check_fits_on_cup_accepts_a_design_within_the_available_side():
+    geom = _geom(height=50)
+    cup_etch.check_fits_on_cup(geom, design_height_mm=geom.available_height_mm - 1)  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +214,7 @@ def test_warp_spreads_edge_content_over_more_output_pixels_than_center():
 def test_narrower_wrap_angle_produces_narrower_physical_output():
     narrow = _geom(wrap_angle_deg=60)
     wide = _geom(wrap_angle_deg=170)
-    assert narrow.output_width_mm < wide.output_width_mm
+    assert narrow.design_width_mm < wide.design_width_mm
 
 
 # ---------------------------------------------------------------------------
@@ -223,15 +245,44 @@ def test_build_pattern_shape_and_alpha_preserved():
     src = np.zeros((300, 300, 4), dtype=np.uint8)
     src[:, :, 0] = 128
     src[:, :, 3] = 200  # partial alpha, should survive resampling
-    out, out_w, out_h = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
+    out, out_w, out_h, design_height_mm = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
     assert out.shape == (out_h, out_w, 4)
     assert out[..., 3].mean() == pytest.approx(200, abs=2)
+    assert design_height_mm == pytest.approx(geom.design_width_mm)  # square source -> square design
 
 
 def test_build_pattern_with_dither_keeps_alpha_channel_undithered():
     geom = _geom()
     src = np.random.default_rng(1).integers(0, 256, size=(300, 300, 4)).astype(np.uint8)
     src[:, :, 3] = 255
-    out, out_w, out_h = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=True)
+    out, out_w, out_h, design_height_mm = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=True)
     assert set(np.unique(out[..., 0]).tolist()) <= {0, 255}
     assert (out[..., 3] == 255).all()
+
+
+def test_build_pattern_preserves_full_image_width_no_cropping_for_wide_source():
+    # Regression test: build_pattern used to size the output canvas purely
+    # from the cup's own geometry, independent of the image, so fit_cover
+    # ended up center-cropping away large chunks of any image whose aspect
+    # ratio didn't match that canvas. The canvas is now sized from the
+    # image's own aspect ratio (see design_height_for_image_mm), so a wide
+    # source's left/right edges must survive even though the cup's
+    # available height (from _geom's default height=100) is much taller
+    # than the resulting (image-aspect-driven) design.
+    geom = _geom()
+    src = np.zeros((100, 400, 4), dtype=np.uint8)
+    src[:, :5, 1] = 255  # green marker at the far left edge
+    src[:, -5:, 1] = 255  # green marker at the far right edge
+    src[:, :, 3] = 255
+    out, out_w, out_h, design_height_mm = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
+    assert design_height_mm == pytest.approx(geom.design_width_mm * 100 / 400)
+    assert out[out_h // 2, :5, 1].max() > 100
+    assert out[out_h // 2, -5:, 1].max() > 100
+
+
+def test_build_pattern_raises_when_image_is_too_tall_for_the_cup():
+    geom = _geom(height=20)  # available_height_mm ~20mm
+    src = np.zeros((400, 100, 4), dtype=np.uint8)  # tall/narrow -> a big design height at this width
+    src[:, :, 3] = 255
+    with pytest.raises(ValueError, match="taller than"):
+        cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)

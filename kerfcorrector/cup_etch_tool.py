@@ -24,6 +24,9 @@ from . import cup_etch
 
 bp = Blueprint("cup_etch_tool", __name__, url_prefix="/cup-etcher")
 
+_MM_PER_INCH = 25.4  # DPI is the unit laser/engraving software actually asks for;
+# cup_etch's own math works in pixels/mm, so this is the one place that converts.
+
 # token -> {"bytes": bytes, "filename": str, "ts": float}. Same in-memory,
 # single-process, bounded store as kerf_tool.py -- see its comment for why
 # that's the right tradeoff here (safe for a single-worker free-tier host,
@@ -144,15 +147,16 @@ PAGE = """<!doctype html>
     <label>Design width <span class="unit">(mm)</span></label>
     <input type="number" id="p-width" value="60" step="1" min="1">
     <div class="sub">How wide the finished etching should look, viewed
-    head-on. The design's height is calculated from the geometry above, not
-    entered separately.</div>
+    head-on. The uploaded image is scaled to this width, keeping its own
+    proportions (never cropped or stretched) -- its height is whatever that
+    scaling works out to, not entered separately.</div>
 
     <div id="computed-geom" class="sub"></div>
 
-    <label>Resolution <span class="unit">(pixels/mm)</span></label>
-    <input type="number" id="p-dpm" value="6" step="0.5" min="1" max="20">
-    <div class="sub">~6 px/mm &asymp; 150 DPI. Higher looks sharper but
-    dithering (below) gets slower on big images.</div>
+    <label>Resolution <span class="unit">(DPI)</span></label>
+    <input type="number" id="p-dpi" value="150" step="10" min="10" max="1200">
+    <div class="sub">150 DPI is a reasonable default. Higher looks sharper
+    but dithering (below) gets slower on big images.</div>
 
     <div class="check">
       <input type="checkbox" id="p-dither" checked>
@@ -254,7 +258,9 @@ function computeGeometryPreview() {
     return;
   }
   const wrapAngle = 2 * Math.asin(width / refDiameter) * 180 / Math.PI;
-  out.innerHTML = `Calculated design height: <b>${height.toFixed(1)}mm</b><br>` +
+  out.innerHTML = `Available height along the side: <b>${height.toFixed(1)}mm</b> ` +
+    `(the image is scaled to the design width above, keeping its own proportions -- ` +
+    `its actual height depends on the image and must fit within this)<br>` +
     `Mid-height (rotary calibration) diameter: <b>${refDiameter.toFixed(1)}mm</b><br>` +
     `Front coverage: <b>${wrapAngle.toFixed(0)}&deg;</b>`;
 }
@@ -273,7 +279,7 @@ document.getElementById('generate').addEventListener('click', async () => {
     top_circumference_mm: parseFloat(document.getElementById('p-top-circ').value),
     side_length_mm: parseFloat(document.getElementById('p-side').value),
     design_width_mm: parseFloat(document.getElementById('p-width').value),
-    px_per_mm: parseFloat(document.getElementById('p-dpm').value),
+    dpi: parseFloat(document.getElementById('p-dpi').value),
     dither: document.getElementById('p-dither').checked,
   };
   let resp, data;
@@ -344,11 +350,13 @@ def generate():
             side_length_mm=float(body["side_length_mm"]),
             design_width_mm=float(body["design_width_mm"]),
         )
-        px_per_mm = float(body["px_per_mm"])
-        if not (0.1 <= px_per_mm <= 50):
-            raise ValueError("Resolution must be between 0.1 and 50 pixels/mm.")
+        dpi = float(body["dpi"])
+        if not (3 <= dpi <= 1270):
+            raise ValueError("Resolution must be between 3 and 1270 DPI.")
+        px_per_mm = dpi / _MM_PER_INCH
         source = _load_image_array(body["token"])
-        out, out_w, out_h = cup_etch.build_pattern(source, geom, px_per_mm, bool(body.get("dither")))
+        out, out_w, out_h, design_height_mm = cup_etch.build_pattern(
+            source, geom, px_per_mm, bool(body.get("dither")))
     except (KeyError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
 
@@ -361,8 +369,8 @@ def generate():
     return jsonify({
         "output_w": out_w,
         "output_h": out_h,
-        "output_width_mm": geom.output_width_mm,
-        "output_height_mm": geom.output_height_mm,
+        "output_width_mm": geom.design_width_mm,
+        "output_height_mm": design_height_mm,
         "reference_diameter_mm": geom.reference_diameter_mm,
         "wrap_angle_deg": geom.wrap_angle_deg,
         "preview_data_url": preview_data_url,

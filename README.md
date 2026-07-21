@@ -428,22 +428,27 @@ between the rims -- the vertical height isn't something you can measure
 directly without already knowing the taper, whereas the side length is
 just a straight tape measurement. From those three (which fully describe
 the frustum) plus a **design width** (how wide the finished etching should
-look, viewed head-on), the tool derives everything else: the design's own
-axial height (the other leg of the right triangle the side length and the
-difference in radii form), the wrap angle, and the mid-height/rotary
-diameter -- there's a live-updating readout of all three as you type,
-before you even upload an image. Also pick a resolution (pixels/mm) and
-whether to dither. Dithering runs a Floyd-Steinberg error diffusion down to
-pure black/white, which is what makes a continuous-tone photo still show
-shading once etched (a laser can only mark or not mark a given spot) --
-leave it off for a logo or line art that's already high-contrast. The
-result comes back as a PNG (alpha channel preserved, so a transparent
-background stays transparent/unetched) sized to the exact physical
-dimensions reported alongside it.
+look, viewed head-on), the tool derives the wrap angle and the mid-height
+(rotary calibration) diameter, plus how much axial height is *available*
+along the cup's side -- there's a live-updating readout of all three as you
+type, before you even upload an image. Also pick a resolution in DPI
+(converted to the pixels/mm `cup_etch.py`'s own math uses internally) and
+whether to dither. Dithering runs a Floyd-Steinberg error diffusion
+down to pure black/white, which is what makes a continuous-tone photo
+still show shading once etched (a laser can only mark or not mark a given
+spot) -- leave it off for a logo or line art that's already high-contrast.
 
-Source images are fit to the output's aspect ratio by scaling up and
-center-cropping (never stretched to fit, and never letterboxed) before the
-warp is applied.
+The uploaded image itself is never cropped or stretched: it's scaled to
+the design width while keeping its own proportions, and the design's
+actual height is whatever that scaling works out to (a wide image ends up
+short, a tall one ends up tall) -- not forced to fill some independently-
+computed height. If that height would exceed what's actually available
+along the cup's side (the side-length-derived figure above), generating
+the pattern fails with a clear error rather than silently cropping the
+image to fit; the fix is a narrower design width or a differently-shaped
+source image. The result comes back as a PNG (alpha channel preserved, so
+a transparent background stays transparent/unetched) sized to the exact
+physical dimensions reported alongside it.
 
 ## Tests
 

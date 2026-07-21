@@ -4,41 +4,44 @@ front-facing panel with a rotary laser attachment.
 A rotary attachment replaces one machine axis with rotation: the cup spins
 in place while the laser head only moves along the other (axial) axis.
 That means an output pixel *column* always corresponds to the same
-rotation angle at every row, regardless of the cup's local diameter at
-that row -- the taper never enters the horizontal mapping. What the taper
-*does* affect is the physical size of the output (the diameter used to
-convert a rotation angle into a real width is the cup's diameter at the
-design's own vertical center -- see DesignGeometry.local_diameter_mm,
-which depends on both the image's own aspect ratio and where on the taper
-it's placed) and, naturally, how wide the finished etching *appears* at
-the narrow vs. wide end once it's actually on the cup -- that's the
-taper's own true shape showing through, not a distortion to correct.
-
-The correction implemented here targets a different effect: viewed
-straight on (an orthographic front view), a curved surface foreshortens
-much more sharply near its own silhouette edges than at its front-center,
-where the surface is nearly tangent to the view direction -- the same
-reason a photo wrapped around any round object looks "pinched" at the
-edges. A plain linear wrap (equal rotation per output column, which is all
-a rotary attachment can physically do) would carry that foreshortening
-straight through to the finished etching. The fix has to happen in the
-source image instead: pre-warp column positions through an arcsine so
-that, once the front-view foreshortening is applied on top of it, the
-combined result reads as the original, undistorted rectangle.
+rotation angle at every row (given a fixed calibration diameter and a
+fixed total-image-width, both set once for the whole job) -- a rotary
+simply can't apply a different angle to the same column at different
+rows. What varies by row is the cup's own *local radius* wherever that
+row actually sits, and that's exactly what a naive, single-diameter
+correction misses.
 
 Derivation: an orthographic front view of a circular cross-section of
-radius r projects a point at angle phi (0 = facing the viewer) to screen
-position r*sin(phi). Requiring that screen position be proportional to
-source column u (so the finished etching, viewed head-on, reproduces the
-source image's own proportions) gives phi(u) = asin(u * sin(phi_max)),
-where phi_max is the half-angle of the front-facing window in use. Because
-a rotary attachment maps output column linearly to rotation angle
-(u_out = phi / phi_max), inverting for the source column to sample at a
-given output column gives:
+local radius r(v) at height v projects a point etched at angle phi to
+screen position r(v)*sin(phi). Requiring that screen position be
+proportional to source column u, *at every row*, not just one reference
+row (so a straight vertical line in the source stays straight -- not
+diagonal -- at every height, not merely proportioned correctly at the
+design's own center) means the etched angle for a given source column
+has to depend on r(v):
 
-    u_src(u_out) = sin(u_out * phi_max) / sin(phi_max)
+    phi(u, v) = asin(u * sin(phi_max) * r_center / r(v))
 
-which is exactly the r-independent (taper-independent) formula used below.
+where r_center is the radius at the design's own vertical center (what
+the design_width_mm input actually describes) and phi_max is the
+half-angle needed there alone. Because a rotary maps output column
+linearly to rotation angle *uniformly across every row*
+(phi = u_out * phi_max_canvas, a single canvas-wide constant -- see
+DesignGeometry.phi_max_rad, which is wider than the phi_max implied by
+design_width_mm alone whenever the design spans any taper), inverting for
+the source column to sample at a given (output column, output row) gives:
+
+    u_src(u_out, v) = sin(u_out * phi_max_canvas) * r(v) / (r_center * sin(phi_max))
+
+implemented in warp_for_rotary_tapered below. Rows narrower than r_center
+reach their own source edges before the canvas's own angular range runs
+out (values fall outside [-1, 1], left as transparent, undecorated glass);
+the canvas is sized so the design's single *narrowest* row is exactly the
+one that uses the full available angular range, so no row's content ever
+gets clipped. warp_for_rotary (the single-phi_max, row-independent
+version) remains as the simpler building block this generalizes from --
+exact for a true cylinder, where r(v) is constant and the two formulas
+coincide.
 """
 
 from __future__ import annotations
@@ -144,12 +147,30 @@ class DesignGeometry:
     image lower down, even on an identical cup)."""
 
     height_mm: float
-    local_diameter_mm: float
-    phi_max_rad: float
+    local_diameter_mm: float  # diameter at the design's own vertical center -- what design_width_mm describes
+    phi_max_rad: float  # the output CANVAS's own angular half-range (see module docstring) -- can exceed
+    # asin(design_width_mm / local_diameter_mm) whenever the design spans any taper, since rows
+    # narrower than local_diameter_mm need more angular range to show their own full width.
 
     @property
     def wrap_angle_deg(self) -> float:
         return math.degrees(self.phi_max_rad) * 2.0
+
+    @property
+    def arc_length_mm(self) -> float:
+        # The pattern's own true physical width once actually applied to the
+        # curved surface -- NOT the same as the apparent (front-viewed) width
+        # the design width input describes. Peeling/unrolling any design off
+        # a curved surface yields its arc length (radius * angle in
+        # radians), which always exceeds the chord/apparent width (radius *
+        # sine of that angle) for any nonzero angle -- the same reason a
+        # square wrapped around a cylinder isn't square once peeled back
+        # off. This is the number to feed into the rotary attachment's own
+        # calibration: a rotary converts "image width in mm" to a rotation
+        # angle via arc length (angle = width / radius), not via chord
+        # length, since arc length is the only relationship rotation can
+        # physically produce.
+        return self.phi_max_rad * self.local_diameter_mm
 
 
 def design_height_for_image_mm(geom: CupGeometry, src_w: int, src_h: int) -> float:
@@ -176,17 +197,31 @@ def design_geometry_for_image(geom: CupGeometry, src_w: int, src_h: int) -> Desi
     center_offset_mm = top_offset_mm + height_mm / 2.0
     local_diameter_mm = geom.diameter_at_axial_offset_from_top(center_offset_mm)
 
-    max_width = local_diameter_mm * _MAX_SIN_PHI_MAX
-    if geom.design_width_mm >= max_width:
-        raise ValueError(
-            f"Design width ({geom.design_width_mm:g}mm) is too close to the diameter at this "
-            f"design's own position ({local_diameter_mm:.1f}mm) -- keep it under {max_width:.1f}mm, "
-            "or the edges would need near-infinite stretching (a front view can never be wider "
-            "than the diameter itself)."
-        )
+    # Diameter is linear along the taper, so its extremes across the
+    # design's own height span are just at the design's own top and bottom
+    # -- no need to sample in between. The narrowest of the two needs the
+    # most angular range to show the design's own full width at that row
+    # (see module docstring); the canvas has to be sized to that row so no
+    # row's content ever gets clipped -- wider rows then use less than the
+    # full canvas width, leaving plain, undecorated glass either side.
+    top_d = geom.diameter_at_axial_offset_from_top(top_offset_mm)
+    bottom_d = geom.diameter_at_axial_offset_from_top(top_offset_mm + height_mm)
+    narrowest_diameter = min(top_d, bottom_d)
 
-    phi_max_rad = math.asin(geom.design_width_mm / local_diameter_mm)
-    return DesignGeometry(height_mm=height_mm, local_diameter_mm=local_diameter_mm, phi_max_rad=phi_max_rad)
+    # design_width_mm / narrowest_diameter is exactly local_diameter_mm *
+    # sin(asin(design_width_mm/local_diameter_mm)) / narrowest_diameter,
+    # simplified to avoid a needless asin/sin round trip.
+    sin_needed = geom.design_width_mm / narrowest_diameter
+    if sin_needed >= _MAX_SIN_PHI_MAX:
+        raise ValueError(
+            f"This design's narrowest point (diameter {narrowest_diameter:.1f}mm, within its own "
+            f"height range) can't show the full {geom.design_width_mm:g}mm design width without "
+            "its edges needing near-infinite stretching there -- keep the design width smaller, "
+            "make it shorter (less of the taper), or reposition it somewhere with less taper."
+        )
+    phi_max_canvas = math.asin(sin_needed)
+
+    return DesignGeometry(height_mm=height_mm, local_diameter_mm=local_diameter_mm, phi_max_rad=phi_max_canvas)
 
 
 def output_size_px(width_mm: float, height_mm: float, px_per_mm: float) -> tuple[int, int]:
@@ -214,21 +249,27 @@ def fit_cover(image_rgba: np.ndarray, target_w: int, target_h: int) -> np.ndarra
 
 
 def _bilinear_sample(source: np.ndarray, sx: np.ndarray, sy: np.ndarray) -> np.ndarray:
-    """sx: (out_w,) source x-coordinates. sy: (out_h,) source y-coordinates.
-    Returns (out_h, out_w, channels) bilinearly resampled from source."""
+    """sx: (out_w,) source x-coordinates shared by every row, or (out_h,
+    out_w) a different source x-coordinate per row (needed once the warp
+    accounts for a row-varying local radius -- see warp_for_rotary_tapered).
+    sy: (out_h,) source y-coordinates. Returns (out_h, out_w, channels)
+    bilinearly resampled from source."""
     src_h, src_w = source.shape[:2]
+    sx = np.broadcast_to(sx, (sy.shape[0], sx.shape[-1]))
 
     x0 = np.clip(np.floor(sx).astype(np.int64), 0, src_w - 1)
     x1 = np.clip(x0 + 1, 0, src_w - 1)
-    fx = (sx - x0).reshape(1, -1, 1)
+    fx = (sx - x0)[..., None]
 
     y0 = np.clip(np.floor(sy).astype(np.int64), 0, src_h - 1)
     y1 = np.clip(y0 + 1, 0, src_h - 1)
     fy = (sy - y0).reshape(-1, 1, 1)
+    y0_2d = np.broadcast_to(y0[:, None], x0.shape)
+    y1_2d = np.broadcast_to(y1[:, None], x0.shape)
 
     src_f = source.astype(np.float64)
-    top = src_f[y0][:, x0] * (1 - fx) + src_f[y0][:, x1] * fx
-    bottom = src_f[y1][:, x0] * (1 - fx) + src_f[y1][:, x1] * fx
+    top = src_f[y0_2d, x0] * (1 - fx) + src_f[y0_2d, x1] * fx
+    bottom = src_f[y1_2d, x0] * (1 - fx) + src_f[y1_2d, x1] * fx
     out = top * (1 - fy) + bottom * fy
     return np.clip(out, 0, 255).astype(np.uint8)
 
@@ -250,6 +291,65 @@ def warp_for_rotary(source: np.ndarray, phi_max_rad: float, out_w: int, out_h: i
     sy = (np.arange(out_h, dtype=np.float64) + 0.5) / out_h * (src_h - 1)
 
     return _bilinear_sample(source, sx, sy)
+
+
+def _u_src_grid_tapered(geom: CupGeometry, design: DesignGeometry,
+                         out_w: int, out_h: int) -> np.ndarray:
+    """The (out_h, out_w) grid of normalized source column positions (see
+    warp_for_rotary_tapered and the module docstring for the derivation),
+    split out on its own so it's directly checkable without going through
+    pixel-color detection on a rendered, bilinearly-resampled image (which
+    isn't precise enough to verify a sub-pixel geometric claim like "this
+    stays at a constant screen position across rows"). Values outside
+    [-1, 1] mean "no design content here" (see warp_for_rotary_tapered)."""
+    phi_max_canvas = design.phi_max_rad
+    center_phi_max = math.asin(geom.design_width_mm / design.local_diameter_mm)
+    r_center = design.local_diameter_mm / 2.0
+
+    v = (np.arange(out_h, dtype=np.float64) + 0.5) / out_h  # 0..1, top to bottom of the design
+    axial = geom.axial_top_offset_mm + v * design.height_mm
+    r_row = geom.diameter_at_axial_offset_from_top(axial) / 2.0  # (out_h,)
+
+    u_out = (np.arange(out_w, dtype=np.float64) + 0.5) / out_w * 2.0 - 1.0  # (out_w,)
+    theta = u_out * phi_max_canvas  # (out_w,)
+
+    # u_src varies by both row and column: a row narrower than r_center
+    # reaches its own source edges (|u_src| = 1) before the canvas's own
+    # angular range runs out; a row wider than r_center would need *more*
+    # than the canvas's own range to reach its edges, so it simply can't --
+    # values beyond [-1, 1] mark "no design content here."
+    return (r_row[:, None] * np.sin(theta)[None, :]) / (r_center * math.sin(center_phi_max))  # (out_h, out_w)
+
+
+def warp_for_rotary_tapered(source: np.ndarray, geom: CupGeometry, design: DesignGeometry,
+                             out_w: int, out_h: int) -> np.ndarray:
+    """Like warp_for_rotary, but accounts for the cup's actual local radius
+    at *every* row, not just a single center-row snapshot -- necessary to
+    keep vertical lines in the source genuinely straight (not merely
+    proportioned correctly) at every height, not only at the design's own
+    vertical center. See the module docstring for the derivation.
+
+    source must already be fit (see fit_cover) to the design's own apparent
+    aspect ratio (design_width_mm x design.height_mm), NOT to out_w:out_h --
+    design.phi_max_rad (the canvas's own angular range) is generally wider
+    than what design_width_mm alone implies, and rows away from the
+    design's own narrowest point use less than that full range, leaving the
+    remainder fully transparent (plain, undecorated glass there)."""
+    u_src = _u_src_grid_tapered(geom, design, out_w, out_h)
+    valid = (u_src >= -1.0) & (u_src <= 1.0)
+    u_src_clipped = np.clip(u_src, -1.0, 1.0)
+
+    src_h, src_w = source.shape[:2]
+    sx = (u_src_clipped + 1.0) / 2.0 * (src_w - 1)  # (out_h, out_w)
+    sy = (np.arange(out_h, dtype=np.float64) + 0.5) / out_h * (src_h - 1)  # (out_h,)
+
+    sampled = _bilinear_sample(source, sx, sy)
+    # Force both RGB and alpha to a blank state where the design doesn't
+    # reach -- not just alpha -- in case downstream engraving software
+    # doesn't respect the alpha channel and would otherwise etch a stray
+    # copy of whatever edge pixel got clamped into range there.
+    sampled[~valid] = (255, 255, 255, 0)
+    return sampled
 
 
 def floyd_steinberg_dither(gray: np.ndarray) -> np.ndarray:
@@ -287,12 +387,20 @@ def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
     src_h, src_w = image_rgba.shape[:2]
     design = design_geometry_for_image(geom, src_w, src_h)
 
-    out_w, out_h = output_size_px(geom.design_width_mm, design.height_mm, px_per_mm)
-    # fit_cover only has rounding-sized slack to take up here, since out_w:out_h
-    # is (by design_height_for_image_mm's construction) already the source's
-    # own aspect ratio -- the whole image ends up visible, none of it cropped.
-    fitted = fit_cover(image_rgba, out_w, out_h)
-    warped = warp_for_rotary(fitted, design.phi_max_rad, out_w, out_h)
+    # Fit the source at its own apparent aspect ratio (design_width_mm x
+    # design.height_mm -- matches the source's own proportions exactly, so
+    # fit_cover has only rounding-sized slack to take up, never cropping).
+    # The final output is wider than that: out_w is sized to the arc length
+    # (see DesignGeometry.arc_length_mm), not the apparent width, since
+    # that's the pattern's real physical size once actually on the cup.
+    # warp_for_rotary_tapered already samples from the fitted source by its
+    # own dimensions regardless of the requested output width, so simply
+    # asking it for the wider out_w directly (no separate resize step)
+    # produces the correctly-warped result at the physically-correct size.
+    out_w, out_h = output_size_px(design.arc_length_mm, design.height_mm, px_per_mm)
+    fit_w = max(1, round(out_h * geom.design_width_mm / design.height_mm))
+    fitted = fit_cover(image_rgba, fit_w, out_h)
+    warped = warp_for_rotary_tapered(fitted, geom, design, out_w, out_h)
 
     if dither:
         gray = warped[..., :3].astype(np.float64) @ _GRAY_WEIGHTS

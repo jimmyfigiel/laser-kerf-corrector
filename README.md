@@ -398,22 +398,53 @@ the rotary's own linear mapping and the surface's own foreshortening are
 both applied, the two cancel out and the finished etching reads as the
 original, undistorted rectangle.
 
-The taper (top diameter vs. bottom diameter) doesn't actually change that
-horizontal correction directly -- it's driven purely by how much of the
-circumference the design covers (the **wrap angle**), not by the cup's
-absolute size. What the taper *does* determine is which diameter that
-wrap angle is even relative to: the diameter used to convert the rotary's
-rotation into a real-world width is the diameter at the design's *own
-vertical center*, not just the cup's overall mid-height -- a short design
-placed near the narrow end of a tapered cup sees a meaningfully different
-diameter than the same design centered on the whole taper, so where
-vertically the design sits genuinely changes the correction, not only the
-final output's physical size. That's the number to enter into your rotary
-attachment's own calibration (LightBurn's "Rotary Setup" or equivalent),
-and the tool reports it alongside the generated pattern so the two stay in
-sync. Get that number wrong (or use a different one than what you
-calibrated the rotary with) and the pattern will be the right shape but
-the wrong physical size.
+The taper (top diameter vs. bottom diameter) matters more than it might
+seem, because a rotary attachment's column-to-angle mapping is the same
+for every row -- it has no way to apply a different angle to the same
+column at a different height. If the correction only used one reference
+diameter (say, the diameter at the design's own vertical center) for every
+row, a straight vertical line in the source would come out looking
+diagonal once actually viewed on the finished, real cup: the *etched*
+angle for that column is fixed, but the cup's *actual* local radius keeps
+changing with height on a taper, so the line's apparent (front-viewed)
+screen position -- radius times the sine of that angle -- drifts as you
+go up or down, even though the physical line etched on the glass is
+perfectly straight. So the correction here accounts for the cup's actual
+local radius at *every* row, not just a single snapshot -- keeping
+vertical lines in the source genuinely straight at every height they
+appear at, not merely proportioned correctly at the design's own center.
+
+One consequence: the design's own narrowest point (top or bottom of its
+own height span, wherever the taper makes it narrowest) needs the most
+angular range to show its own full width, so the output canvas is sized
+to that row -- every other row then uses *less* than the canvas's full
+width, leaving plain, undecorated (fully transparent) glass in the
+remainder rather than stretching or cropping content to fill a plain
+rectangle. In practice this means the design's own visible boundary comes
+out as a slight trapezoid (following the cup's own taper) even though the
+output PNG itself is still a plain rectangle -- and the diameter to enter
+into your rotary attachment's own calibration (LightBurn's "Rotary Setup"
+or equivalent) is still the diameter at the design's own vertical center,
+reported alongside the generated pattern so the two stay in sync.
+
+**Apparent width vs. the pattern's own physical width:** the design width
+you enter is how wide the finished etching should *look*, viewed head-on
+-- but that's not the same as how wide the pattern itself physically is
+once it's actually etched onto the curved surface. Peeling (or unrolling)
+any design off a curved surface always yields more material than its own
+straight-line width -- the same reason a square wrapped around a cylinder
+isn't square once you peel the pattern back off it: the arc length between
+two points on a curve is always longer than the straight chord between
+them. `DesignGeometry.arc_length_mm` (`= phi_max_rad * local_diameter_mm`,
+using the canvas's own angular range -- see above -- not just what the
+design width and center diameter alone would imply) is the pattern's true
+physical size, and it's what actually determines the output PNG's pixel
+dimensions at a given resolution -- **this**, not the apparent width, is
+the number to enter as the image width in your rotary job, since a rotary
+attachment converts an image's mm-width into a rotation angle via arc
+length (angle = width / radius), which is the only relationship a
+physical rotation can produce. The tool reports both numbers clearly
+labeled, live as you type and again after generating.
 
 Because this corrects a *front-view* effect, it's only defined for a
 front-facing panel, not a full wrap-around design -- there's no single

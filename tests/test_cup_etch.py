@@ -165,6 +165,29 @@ def test_design_geometry_local_diameter_depends_on_vertical_placement():
     assert design_bottom.local_diameter_mm == pytest.approx(100, abs=1)  # near the bottom rim
 
 
+def test_arc_length_exceeds_apparent_chord_width():
+    # Fundamental geometric fact this whole module depends on: peeling a
+    # design off a curved surface always yields *more* physical material
+    # than its own straight-line (apparent, front-viewed) width -- arc
+    # length (radius * angle) exceeds chord length (radius * sine of that
+    # angle) for any nonzero angle. A square projected onto a cylinder is
+    # not square once you peel the pattern back off it.
+    geom = _geom(bottom_diameter=80, top_diameter=60, height=100, design_width=30, top_offset=0)
+    design = cup_etch.design_geometry_for_image(geom, src_w=30, src_h=100)  # fills the whole band
+    assert design.arc_length_mm > geom.design_width_mm
+    assert design.arc_length_mm == pytest.approx(design.phi_max_rad * design.local_diameter_mm)
+
+
+def test_arc_length_converges_to_chord_width_for_small_angles():
+    # As phi_max -> 0, sin(phi_max) -> phi_max, so arc length and apparent
+    # width should converge (the small-taper/small-coverage case is nearly
+    # flat, where the arc-vs-chord distinction barely matters).
+    geom = _geom(bottom_diameter=1000, top_diameter=1000, height=100, design_width=1, top_offset=0)
+    design = cup_etch.design_geometry_for_image(geom, src_w=1, src_h=100)
+    ratio = design.arc_length_mm / geom.design_width_mm
+    assert ratio == pytest.approx(1.0, abs=0.001)
+
+
 def test_design_geometry_rejects_design_taller_than_remaining_space_below_offset():
     geom = _geom(bottom_diameter=80, top_diameter=60, height=100, design_width=30, top_offset=80)
     with pytest.raises(ValueError, match="remaining"):
@@ -184,7 +207,7 @@ def test_design_geometry_rejects_width_too_close_to_local_diameter():
     # comfortably clear of the "doesn't fit the available height" check
     # while still tripping the width-vs-diameter one.
     geom = _geom(bottom_diameter=70, top_diameter=70, height=100, design_width=69.965, top_offset=0)
-    with pytest.raises(ValueError, match="too close"):
+    with pytest.raises(ValueError, match="near-infinite stretching"):
         cup_etch.design_geometry_for_image(geom, src_w=1, src_h=1)  # square -> design_height == design_width
 
 
@@ -271,6 +294,69 @@ def test_narrower_wrap_angle_produces_narrower_physical_output():
 
 
 # ---------------------------------------------------------------------------
+# warp_for_rotary_tapered -- the full per-row correction
+# ---------------------------------------------------------------------------
+
+def test_tapered_warp_u_src_grid_keeps_an_off_center_line_at_a_constant_screen_position():
+    # The whole point of this correction: on a real taper, a straight
+    # vertical line in the source -- off-center, so the single-row
+    # (warp_for_rotary) approximation would show it drifting sideways with
+    # height -- must appear at a genuinely constant *apparent* (front-view)
+    # screen position at every row, not just at the design's own center.
+    #
+    # Checked directly against the u_src grid (not by hunting for a marker's
+    # color in a rendered, bilinearly-resampled image): for a fixed u_src,
+    # find whichever output column reaches it at each row, and confirm
+    # r_row * sin(theta) -- the actual apparent screen position -- comes
+    # out the same everywhere. A pixel-color search isn't precise enough
+    # for this (bilinear interpolation smears a narrow marker asymmetrically
+    # once the local sampling density itself varies -- which it does here,
+    # by design -- and a wider marker just averages over a *range* of u_src
+    # values instead of checking one, muddying exactly the effect under test).
+    geom = _geom(bottom_diameter=100, top_diameter=60, height=100, design_width=40, top_offset=0)
+    design = cup_etch.design_geometry_for_image(geom, src_w=1, src_h=1)  # shape unused below
+
+    out_w, out_h = 4000, 200
+    u_src = cup_etch._u_src_grid_tapered(geom, design, out_w, out_h)
+    u_out = (np.arange(out_w, dtype=np.float64) + 0.5) / out_w * 2.0 - 1.0
+    theta_all = u_out * design.phi_max_rad
+    axial_top = geom.axial_top_offset_mm
+
+    target_u_src = 0.6
+    screen_positions = []
+    for row_idx in [10, 60, 100, 140, 190]:
+        col = int(np.argmin(np.abs(u_src[row_idx] - target_u_src)))
+        assert abs(u_src[row_idx, col] - target_u_src) < 0.001  # found a genuinely close match
+        v = (row_idx + 0.5) / out_h
+        r_v = geom.diameter_at_axial_offset_from_top(axial_top + v * design.height_mm) / 2.0
+        screen_positions.append(r_v * math.sin(theta_all[col]))
+
+    # For reference, the single-phi_max (non-tapered) approximation this
+    # replaces would show roughly a 5-6mm drift for this same off-center
+    # line on this same taper -- the residual here is just pixel-column
+    # quantization (out_w=4000 columns -> a ~0.01mm-scale rounding gap
+    # between "the column closest to target_u_src" and target_u_src
+    # exactly), not a real discrepancy.
+    spread = max(screen_positions) - min(screen_positions)
+    assert spread == pytest.approx(0, abs=0.02)
+
+
+def test_tapered_warp_matches_simple_warp_for_a_true_cylinder():
+    # With no taper, every row shares the same local radius, so the full
+    # per-row correction should reduce to exactly the single-phi_max
+    # (warp_for_rotary) formula -- this is the module docstring's claimed
+    # special case, checked directly.
+    geom = _geom(bottom_diameter=70, top_diameter=70, height=100, design_width=30)  # no taper
+    design = cup_etch.design_geometry_for_image(geom, src_w=300, src_h=300)
+    src = _ramp_image(w=300, h=300)
+
+    out_w, out_h = 300, 300
+    tapered = cup_etch.warp_for_rotary_tapered(src, geom, design, out_w, out_h)
+    simple = cup_etch.warp_for_rotary(src, design.phi_max_rad, out_w, out_h)
+    assert np.abs(tapered[..., 0].astype(int) - simple[..., 0].astype(int)).max() <= 1
+
+
+# ---------------------------------------------------------------------------
 # floyd_steinberg_dither
 # ---------------------------------------------------------------------------
 
@@ -294,7 +380,12 @@ def test_dither_of_solid_field_stays_that_extreme():
 # ---------------------------------------------------------------------------
 
 def test_build_pattern_shape_and_alpha_preserved():
-    geom = _geom(design_width=30)
+    # No taper (bottom == top diameter) here specifically so every row sees
+    # the same local radius and none of the design gets margined out (see
+    # test_build_pattern_leaves_transparent_margins_on_a_real_taper below
+    # for that behavior) -- this test is just about alpha surviving
+    # resampling cleanly.
+    geom = _geom(bottom_diameter=70, top_diameter=70, design_width=30)
     src = np.zeros((300, 300, 4), dtype=np.uint8)
     src[:, :, 0] = 128
     src[:, :, 3] = 200  # partial alpha, should survive resampling
@@ -305,7 +396,7 @@ def test_build_pattern_shape_and_alpha_preserved():
 
 
 def test_build_pattern_with_dither_keeps_alpha_channel_undithered():
-    geom = _geom(design_width=30)
+    geom = _geom(bottom_diameter=70, top_diameter=70, design_width=30)  # no taper -- see above
     src = np.random.default_rng(1).integers(0, 256, size=(300, 300, 4)).astype(np.uint8)
     src[:, :, 3] = 255
     out, out_w, out_h, design = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=True)
@@ -314,6 +405,26 @@ def test_build_pattern_with_dither_keeps_alpha_channel_undithered():
     # handful of edge pixels to 254 instead of 255 -- not a functional bug,
     # so allow a small tolerance rather than requiring bit-exact 255.
     assert (out[..., 3] >= 250).all()
+
+
+def test_build_pattern_leaves_transparent_margins_on_a_real_taper():
+    # The whole point of the per-row correction: on a real taper, only the
+    # design's own narrowest row uses the full canvas width -- every other
+    # row uses less of it, leaving plain, undecorated (fully transparent)
+    # glass in the remainder, rather than stretching/cropping content to
+    # fill the whole rectangle.
+    geom = _geom(bottom_diameter=100, top_diameter=60, height=100, design_width=10)  # real taper
+    src = np.zeros((300, 300, 4), dtype=np.uint8)
+    src[:, :, 3] = 255
+    out, out_w, out_h, design = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
+    # The design's own top (narrower than its center, since top_diameter <
+    # bottom_diameter here) should reach further across than a wider row
+    # elsewhere in the design -- check the very top row has less transparent
+    # margin than a row nearer the (wider, bottom-ward) design center.
+    top_row_opaque = (out[0, :, 3] > 0).sum()
+    center_row_opaque = (out[out_h // 2, :, 3] > 0).sum()
+    assert top_row_opaque >= center_row_opaque
+    assert center_row_opaque < out_w  # the center row must show *some* margin
 
 
 def test_build_pattern_preserves_full_image_width_no_cropping_for_wide_source():
@@ -342,3 +453,20 @@ def test_build_pattern_raises_when_image_is_too_tall_for_the_cup():
     src[:, :, 3] = 255
     with pytest.raises(ValueError, match="remaining"):
         cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
+
+
+def test_build_pattern_output_width_matches_arc_length_not_apparent_width():
+    # Regression test: the output canvas used to be sized from
+    # design_width_mm (the apparent/chord width) directly, which is
+    # narrower than the pattern's true physical size once actually applied
+    # to the curved surface (see DesignGeometry.arc_length_mm). out_w must
+    # reflect the wider arc-length size, not the apparent one.
+    geom = _geom(bottom_diameter=80, top_diameter=60, height=100, design_width=50)  # sizable phi_max
+    src = np.zeros((300, 300, 4), dtype=np.uint8)
+    src[:, :, 3] = 255
+    px_per_mm = 3
+    out, out_w, out_h, design = cup_etch.build_pattern(src, geom, px_per_mm=px_per_mm, dither=False)
+    expected_w, expected_h = cup_etch.output_size_px(design.arc_length_mm, design.height_mm, px_per_mm)
+    assert (out_w, out_h) == (expected_w, expected_h)
+    apparent_w, _ = cup_etch.output_size_px(geom.design_width_mm, design.height_mm, px_per_mm)
+    assert out_w > apparent_w  # arc length always exceeds the apparent/chord width

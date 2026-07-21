@@ -116,6 +116,13 @@ PAGE = """<!doctype html>
   #three-canvas-wrap canvas.dragging { cursor: grabbing; }
   #three-status { position: absolute; top: 10px; left: 10px; font-size: 12px; color: #ccc; background: rgba(0,0,0,0.5);
     padding: 5px 9px; border-radius: 4px; pointer-events: none; }
+  #three-flat-preview { flex: none; border-top: 1px solid #444; padding: 8px 14px; display: flex; align-items: center; gap: 12px; }
+  #three-flat-preview .cap { font-size: 11px; color: #999; flex: none; width: 130px; line-height: 1.4; }
+  #three-flat-preview img { max-height: 90px; max-width: 260px;
+    background-image: linear-gradient(45deg, #333 25%, transparent 25%), linear-gradient(-45deg, #333 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #333 75%), linear-gradient(-45deg, transparent 75%, #333 75%);
+    background-size: 14px 14px; background-position: 0 0, 0 7px, 7px -7px, -7px 0; background-color: #444;
+    border: 1px solid #444; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -207,10 +214,18 @@ PAGE = """<!doctype html>
   <div id="three-panel">
     <div id="three-panel-head">
       <div>3D preview <span class="hint">-- drag to rotate, scroll to zoom</span></div>
+      <label style="font-size:12px; color:#ccc; display:flex; align-items:center; gap:6px; cursor:pointer;">
+        <input type="checkbox" id="three-overlay-toggle" checked>
+        Show original image overlay (semi-transparent)
+      </label>
       <button id="three-close">&times;</button>
     </div>
     <div id="three-canvas-wrap">
       <div id="three-status">Loading 3D viewer...</div>
+    </div>
+    <div id="three-flat-preview" style="display:none">
+      <div class="cap">Flat pattern (as etched) -- for comparison</div>
+      <img id="three-flat-preview-img" alt="flat warped pattern">
     </div>
   </div>
 </div>
@@ -218,7 +233,7 @@ PAGE = """<!doctype html>
 <script>
 const API = '__API_PREFIX__';
 let uploadToken = null, uploadFilename = null;
-let uploadedImgW = null, uploadedImgH = null;
+let uploadedImgW = null, uploadedImgH = null, uploadedFile = null;
 
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
@@ -248,6 +263,7 @@ async function uploadFile(file) {
   status.textContent = '';
   uploadToken = data.token;
   uploadFilename = data.filename;
+  uploadedFile = file;
   document.getElementById('topbar-file').textContent = uploadFilename;
   document.getElementById('change-file').style.display = 'inline';
   document.getElementById('screen-pick').style.display = 'none';
@@ -323,20 +339,35 @@ function computeGeometryPreview() {
     return;
   }
   const topD = 2 * topR, bottomD = 2 * bottomR;
+  const diameterAt = (axialFromTop) => topD + (bottomD - topD) * (axialFromTop / availableHeight);
   const centerOffset = axialOffset + designHeight / 2;
-  const localDiameter = topD + (bottomD - topD) * (centerOffset / availableHeight);
+  const localDiameter = diameterAt(centerOffset);
 
-  const maxWidth = localDiameter * Math.sin(87.5 * Math.PI / 180);
-  if (width >= maxWidth) {
-    out.innerHTML = `<span class="err">Design width must stay under ${maxWidth.toFixed(1)}mm ` +
-      `at this position (can't reach the ${localDiameter.toFixed(1)}mm local diameter).</span>`;
+  // Diameter is linear along the taper, so its extremes across the
+  // design's own height span are just at the design's own top and bottom
+  // -- this mirrors cup_etch.py's design_geometry_for_image exactly (see
+  // its comments for why the narrowest of the two governs the canvas's
+  // own angular range, and why sin_needed simplifies to width/narrowest
+  // without an asin/sin round trip).
+  const narrowestDiameter = Math.min(diameterAt(axialOffset), diameterAt(axialOffset + designHeight));
+  const sinNeeded = width / narrowestDiameter;
+  const maxSin = Math.sin(87.5 * Math.PI / 180);
+  if (sinNeeded >= maxSin) {
+    out.innerHTML = `<span class="err">This design's narrowest point (diameter ` +
+      `${narrowestDiameter.toFixed(1)}mm) can't show the full ${width.toFixed(1)}mm design width ` +
+      `without its edges needing near-infinite stretching there -- try a narrower design width, a ` +
+      `shorter design, or a different position.</span>`;
     return;
   }
-  const wrapAngle = 2 * Math.asin(width / localDiameter) * 180 / Math.PI;
+  const phiMaxCanvas = Math.asin(sinNeeded);
+  const wrapAngle = 2 * phiMaxCanvas * 180 / Math.PI;
+  const arcLength = phiMaxCanvas * localDiameter;  // always > width -- see cup_etch.py's arc_length_mm
   out.innerHTML = `Design height: <b>${designHeight.toFixed(1)}mm</b> ` +
     `(available: ${availableHeight.toFixed(1)}mm)<br>` +
     `Diameter at design's position (rotary calibration): <b>${localDiameter.toFixed(1)}mm</b><br>` +
-    `Front coverage: <b>${wrapAngle.toFixed(0)}&deg;</b>`;
+    `Front coverage: <b>${wrapAngle.toFixed(0)}&deg;</b><br>` +
+    `Pattern's true physical width (enter this in your rotary job): <b>${arcLength.toFixed(1)}mm</b> ` +
+    `(looks ${width.toFixed(1)}mm wide viewed head-on, but the etched pattern itself is wider)`;
 }
 ['p-bottom-circ', 'p-top-circ', 'p-side', 'p-offset', 'p-width'].forEach(id =>
   document.getElementById(id).addEventListener('input', computeGeometryPreview));
@@ -378,9 +409,15 @@ document.getElementById('generate').addEventListener('click', async () => {
   wrap.appendChild(img);
 
   info.innerHTML =
-    `Output: <b>${data.output_w}&times;${data.output_h}px</b> ` +
-    `(<b>${data.output_width_mm.toFixed(1)}mm &times; ${data.output_height_mm.toFixed(1)}mm</b>, ` +
-    `${data.wrap_angle_deg.toFixed(0)}&deg; front coverage)<br>` +
+    `Output: <b>${data.output_w}&times;${data.output_h}px</b> -- ` +
+    `<b>${data.output_width_mm.toFixed(1)}mm &times; ${data.output_height_mm.toFixed(1)}mm</b>, ` +
+    `${data.wrap_angle_deg.toFixed(0)}&deg; front coverage<br>` +
+    `This is the pattern's own true physical size (wider than it looks from ` +
+    `the front, since peeling any design off a curved surface always yields ` +
+    `more material than its straight-line width) -- looks ` +
+    `<b>${data.apparent_width_mm.toFixed(1)}mm</b> wide viewed head-on, but ` +
+    `<b>enter ${data.output_width_mm.toFixed(1)}mm as the image width in your rotary job</b> ` +
+    `-- a rotary converts image width to a rotation angle via that true physical size, not the apparent one.<br>` +
     `Set your rotary attachment's object/roller diameter to <b>${data.local_diameter_mm.toFixed(1)}mm</b> ` +
     `to match this pattern (the diameter at this design's own vertical position).`;
   const link = document.createElement('a');
@@ -425,12 +462,15 @@ function close3DPreview() {
     threeState = null;
   }
   document.getElementById('three-canvas-wrap').innerHTML = '<div id="three-status"></div>';
+  document.getElementById('three-flat-preview').style.display = 'none';
 }
 
 async function open3DPreview() {
   if (!lastGenerateData) return;
   const data = lastGenerateData;
   document.getElementById('three-overlay').classList.add('open');
+  document.getElementById('three-flat-preview-img').src = data.preview_data_url;
+  document.getElementById('three-flat-preview').style.display = 'flex';
   const wrap = document.getElementById('three-canvas-wrap');
   wrap.innerHTML = '<div id="three-status">Loading 3D viewer...</div>';
 
@@ -471,6 +511,36 @@ async function open3DPreview() {
   const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.65, metalness: 0.0, side: THREE.DoubleSide });
   const mesh = new THREE.Mesh(geometry, material);
   scene.add(mesh);
+
+  // A flat, semi-transparent plane holding the *original, unwarped* source
+  // image, hovering just in front of the design's own position -- a direct
+  // visual check that the projection is correct: viewed from straight on
+  // (the default camera angle), this flat original should line up with
+  // the curved, warped pattern showing through/around it. If the two don't
+  // match, the correction is wrong; if they do, the curvature is doing
+  // exactly what it's supposed to.
+  let overlayPlane = null;
+  if (uploadedFile) {
+    const halfH = fullHeight / 2;
+    const centerOffsetFromTop = data.axial_top_offset_mm + data.output_height_mm / 2;
+    const planeY = halfH - centerOffsetFromTop;
+    const localRadius = data.local_diameter_mm / 2;
+    const planeZ = localRadius + Math.max(5, localRadius * 0.15);
+
+    const overlayTexture = await loadOriginalImageTexture(THREE, uploadedFile);
+    if (!document.getElementById('three-overlay').classList.contains('open')) return; // closed while loading
+    const overlayGeom = new THREE.PlaneGeometry(data.apparent_width_mm, data.output_height_mm);
+    const overlayMat = new THREE.MeshBasicMaterial({
+      map: overlayTexture, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false,
+    });
+    overlayPlane = new THREE.Mesh(overlayGeom, overlayMat);
+    overlayPlane.position.set(0, planeY, planeZ);
+    overlayPlane.visible = document.getElementById('three-overlay-toggle').checked;
+    scene.add(overlayPlane);
+  }
+  document.getElementById('three-overlay-toggle').onchange = (e) => {
+    if (overlayPlane) overlayPlane.visible = e.target.checked;
+  };
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.8));
   const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
@@ -601,6 +671,19 @@ function buildCupTexture(data) {
     img.src = data.preview_data_url;
   });
 }
+
+// Loads the original, never-warped source file as a plain Three.js texture
+// (ordinary image orientation -- no flipY override, unlike buildCupTexture's
+// custom UV convention -- since this just goes on a normal PlaneGeometry).
+function loadOriginalImageTexture(THREE, file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    new THREE.TextureLoader().load(url, (tex) => {
+      URL.revokeObjectURL(url);
+      resolve(tex);
+    });
+  });
+}
 </script>
 </body>
 </html>
@@ -656,8 +739,18 @@ def generate():
     return jsonify({
         "output_w": out_w,
         "output_h": out_h,
-        "output_width_mm": geom.design_width_mm,
+        # The output PNG's true physical size -- what the pattern actually
+        # measures once peeled/etched onto the curved surface. This is wider
+        # than apparent_width_mm (arc length always exceeds chord length for
+        # any nonzero wrap angle) and is the number to enter into the rotary
+        # attachment's own calibration, since that's the width a rotary
+        # converts into a rotation angle via arc length.
+        "output_width_mm": design.arc_length_mm,
         "output_height_mm": design.height_mm,
+        # How wide the design *looks* viewed head-on -- the original input,
+        # kept separately since it's a different number than the pattern's
+        # own physical width (see output_width_mm above).
+        "apparent_width_mm": geom.design_width_mm,
         "local_diameter_mm": design.local_diameter_mm,
         "wrap_angle_deg": design.wrap_angle_deg,
         "preview_data_url": preview_data_url,

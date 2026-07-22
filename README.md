@@ -267,13 +267,31 @@ card on the landing page. No other file needs to change.
 
 **Redeploying:** `kerfcorrector/deploy.py` is a Blueprint exposing a single
 `POST /deploy` route that does the whole redeploy sequence server-side --
-`git pull`, clear `__pycache__`, then reload the web app via
+`git pull`, `pip install -r requirements.txt` (so a commit that adds a new
+dependency doesn't crash the app on its next import -- this bit it once:
+Pillow landed in requirements.txt for the cup-etcher tool, nothing had
+installed it into the venv, and the whole site went down until it was
+installed by hand), clear `__pycache__`, then reload the web app via
 PythonAnywhere's own API (not the web UI; driving that via browser
 automation proved unreliable -- the reload button can report success
 without the worker actually restarting). Trigger it from your own machine
 with the `deploy.py` script at the repo root: `python deploy.py <secret>`
 (or set the `DEPLOY_SECRET` environment variable and omit the argument).
 It prints a JSON report of each step and exits non-zero on failure.
+
+If your own machine can't reach the site (a flaky local network, or
+antivirus/VPN software doing HTTPS interception -- Norton's Web/Mail
+Shield has caused exactly this), `deploy.sh` at the repo root does the same
+steps as a plain script, meant to be run **from a PythonAnywhere Bash
+console** instead of your own machine: `bash deploy.sh`. No secret needed
+there -- `/deploy` needs one because it's a public HTTP endpoint anyone on
+the internet can reach, but a console session is already authenticated as
+the account owner, and the request never leaves PythonAnywhere's own
+network. It'll finish the reload automatically if `PYTHONANYWHERE_API_TOKEN`
+is set in that shell (add `export PYTHONANYWHERE_API_TOKEN=...` to
+`~/.bashrc` once -- that file lives outside the git repo, so it's a safe
+place to keep it); otherwise it does everything except the final reload
+and reminds you to click it in the Web tab.
 
 To set it up, two environment variables need to be set in the WSGI config
 file (same place as `FEEDBACK_ADMIN_PASS`, right before `from wsgi import

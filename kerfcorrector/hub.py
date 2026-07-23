@@ -17,7 +17,7 @@ TOOLS = [
     },
     {
         "name": "Kerf Finder",
-        "description": "Cut two small test pieces to work out your kerf and tab-fit clearance, "
+        "description": "Cut three small test pieces to work out your kerf and tab-fit clearances, "
                         "and download a settings profile for the Kerf Corrector above.",
         "url": kerf_finder_tool.bp.url_prefix + "/",
     },

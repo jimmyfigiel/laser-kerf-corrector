@@ -1,15 +1,18 @@
-"""Kerf-finding calibration tool: a three-stage flow that ends with a
+"""Kerf-finding calibration tool: a four-stage flow that ends with a
 settings profile ready for the Kerf Corrector.
 
 1. Cut a plain nominal-size square, measure what's left, get the basic
    kerf (see kerf_finder.build_kerf_square).
-2. Cut a "ladder" -- one fixed hole plus several tabs at increasing extra
-   clearance -- and note which tab press-fits the way you want, to get
-   tab_hole_clearance_mm (see kerf_finder.build_tab_hole_ladder).
-3. Fill in the two settings this tool doesn't yet calibrate physically
-   (tab_finger_clearance_mm, chamfer_mm -- see kerf_finder.py's module
-   docstring for why finger-joint clearance isn't generated here) and
-   download all four numbers as one kerf-settings.json.
+2. Cut a tab-into-hole "ladder" -- one fixed hole plus several tabs at
+   increasing extra clearance -- and note which tab press-fits the way you
+   want, to get tab_hole_clearance_mm (see kerf_finder.build_tab_hole_ladder).
+3. Cut a tab-into-finger-joint ladder -- one fixed mating slot plus
+   several tab/carrier pieces at increasing extra clearance -- the same
+   idea as step 2, but for finger joints, to get tab_finger_clearance_mm
+   (see kerf_finder.build_tab_finger_ladder).
+4. Fill in chamfer_mm (not physically calibrated here -- it eases
+   insertion rather than changing tightness) and download all four
+   numbers as one kerf-settings.json.
 
 A Flask Blueprint mounted alongside the other tools (see hub.py). Like
 cup_etch_tool.py/kerf_tool.py's own upload store, nothing here needs
@@ -52,8 +55,8 @@ PAGE = """<!doctype html>
   .btn.secondary { background: #3a3a3a; }
   .btn.secondary:hover { background: #454545; }
   .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  #square-preview-wrap, #ladder-preview-wrap { margin-top: 12px; background: #fff; border-radius: 6px; padding: 10px; overflow: auto; }
-  #square-preview-wrap img, #ladder-preview-wrap img { display: block; max-width: 100%; }
+  #square-preview-wrap, #ladder-preview-wrap, #finger-preview-wrap { margin-top: 12px; background: #fff; border-radius: 6px; padding: 10px; overflow: auto; }
+  #square-preview-wrap img, #ladder-preview-wrap img, #finger-preview-wrap img { display: block; max-width: 100%; }
   .gen-error { color: #f88; font-size: 12px; margin-top: 8px; }
   .note { font-size: 12px; color: #888; margin-top: 6px; line-height: 1.4; }
   #kerf-result, #profile-summary { margin-top: 14px; padding: 12px; background: #1e1e1e; border-radius: 6px; }
@@ -72,9 +75,9 @@ PAGE = """<!doctype html>
 </div>
 <div id="body">
   <p>Works out the numbers the <a href="/kerf-corrector/" style="color:#6cf">Laser Kerf Corrector</a>
-  needs for your machine/material combination: cut two small test pieces
-  below, measure them, and get a settings file with all four values ready
-  to use.</p>
+  needs for your machine/material combination: cut three small test pieces
+  below, measure/test-fit them, and get a settings file with all four
+  values ready to use.</p>
 
   <section>
     <h2>1. Find your basic kerf</h2>
@@ -126,15 +129,35 @@ PAGE = """<!doctype html>
   </section>
 
   <section>
-    <h2>3. Remaining settings &amp; download profile</h2>
-    <p>These two aren't physically calibrated by this tool yet:
-    finger-joint tabs have trickier correction math than a plain
-    tab-into-hole (their length and width axes shift by different
-    amounts), and chamfer only eases insertion rather than changing overall
-    tightness. Enter values you're comfortable with &mdash; 0 leaves either
-    one off.</p>
+    <h2>3. Fine-tune finger-joint tab fit</h2>
+    <p>Same idea as step 2, but for finger joints: one fixed mating slot,
+    plus several free-standing tab/carrier pieces cut at increasing extra
+    clearance. A finger tab's own correction isn't quite the same math as a
+    tab-into-hole (its length and width shift by different amounts), so
+    this uses its own ladder rather than reusing step 2's. Uses the kerf
+    value from step 1/2 above.</p>
     <div class="fields">
-      <div class="field"><label>Finger-joint tab clearance (mm)</label><input type="number" id="tab-finger-clearance" value="0" step="0.01"></div>
+      <div class="field"><label>Slot/tab size (mm)</label><input type="number" id="finger-nominal" value="10" step="0.1" min="0.1"></div>
+      <div class="field"><label>Number of tabs</label><input type="number" id="finger-count" value="5" step="1" min="2" max="12"></div>
+      <div class="field"><label>Clearance step (mm)</label><input type="number" id="finger-step" value="0.05" step="0.01" min="0.01"></div>
+      <div class="field"><label>Engagement depth (mm)</label><input type="number" id="finger-depth" value="8" step="1" min="1"></div>
+    </div>
+    <div class="actions">
+      <a class="btn" id="finger-download" href="#">Download test ladder</a>
+    </div>
+    <div class="gen-error" id="finger-error"></div>
+    <div id="finger-preview-wrap"><img id="finger-preview" alt="finger-joint ladder preview"></div>
+    <div class="fields" style="margin-top:14px">
+      <div class="field"><label>Clearance that fit best (mm)</label><input type="number" id="tab-finger-clearance" value="0" step="0.01"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>4. Remaining settings &amp; download profile</h2>
+    <p>Chamfer isn't physically calibrated by this tool: it eases insertion
+    rather than changing overall tightness, so a ladder test doesn't map as
+    cleanly. Enter a value you're comfortable with &mdash; 0 leaves it off.</p>
+    <div class="fields">
       <div class="field"><label>Chamfer (mm)</label><input type="number" id="chamfer" value="0" step="0.01"></div>
     </div>
     <div id="profile-summary">
@@ -201,6 +224,7 @@ function recalcKerf() {
   resultBox.textContent = `Kerf: ${kerf.toFixed(3)}mm`;
   document.getElementById('ladder-kerf').value = kerf.toFixed(3);
   refreshLadder();
+  refreshFinger();
   updateProfileSummary();
 }
 ['sq-measured-w', 'sq-measured-h', 'sq-nominal'].forEach(id =>
@@ -239,7 +263,40 @@ const refreshLadder = debounced(async () => {
   document.getElementById(id).addEventListener('input', refreshLadder));
 refreshLadder();
 
-// ---------------- 3. profile ----------------
+// ---------------- 3. finger-joint ladder ----------------
+function fingerParams() {
+  return {
+    nominal_mm: document.getElementById('finger-nominal').value,
+    kerf_mm: document.getElementById('ladder-kerf').value || '0',
+    count: document.getElementById('finger-count').value,
+    step_mm: document.getElementById('finger-step').value,
+    engagement_depth_mm: document.getElementById('finger-depth').value,
+  };
+}
+
+const refreshFinger = debounced(async () => {
+  const errBox = document.getElementById('finger-error');
+  const p = new URLSearchParams(fingerParams());
+  const resp = await fetch(API + '/api/generate-finger-ladder?' + p.toString());
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    errBox.textContent = data.error || 'Could not generate that ladder.';
+    return;
+  }
+  errBox.textContent = '';
+  const blob = await resp.blob();
+  document.getElementById('finger-preview').src = URL.createObjectURL(blob);
+  const nominal = parseFloat(fingerParams().nominal_mm) || 0;
+  const link = document.getElementById('finger-download');
+  link.href = API + '/api/generate-finger-ladder?' + new URLSearchParams({ ...fingerParams(), download: 1 }).toString();
+  link.setAttribute('download', `kerf-test-finger-ladder-${nominal}mm.svg`);
+}, 250);
+
+['ladder-kerf', 'finger-nominal', 'finger-count', 'finger-step', 'finger-depth'].forEach(id =>
+  document.getElementById(id).addEventListener('input', refreshFinger));
+refreshFinger();
+
+// ---------------- 4. profile ----------------
 function updateProfileSummary() {
   document.getElementById('ps-kerf').textContent = (parseFloat(document.getElementById('ladder-kerf').value) || 0).toFixed(3) + 'mm';
   document.getElementById('ps-tab-hole').textContent = (parseFloat(document.getElementById('tab-hole-clearance').value) || 0).toFixed(3) + 'mm';
@@ -306,4 +363,22 @@ def generate_ladder():
     resp = Response(ladder.svg, mimetype="image/svg+xml")
     if request.args.get("download"):
         resp.headers["Content-Disposition"] = f'attachment; filename="kerf-test-ladder-{nominal_mm:g}mm.svg"'
+    return resp
+
+
+@bp.route("/api/generate-finger-ladder")
+def generate_finger_ladder():
+    try:
+        nominal_mm = float(request.args.get("nominal_mm", 10.0))
+        kerf_mm = float(request.args.get("kerf_mm", 0.0))
+        count = int(float(request.args.get("count", 5)))
+        step_mm = float(request.args.get("step_mm", 0.05))
+        engagement_depth_mm = float(request.args.get("engagement_depth_mm", 8.0))
+        ladder = kerf_finder.build_tab_finger_ladder(nominal_mm, kerf_mm, count, step_mm, engagement_depth_mm)
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+
+    resp = Response(ladder.svg, mimetype="image/svg+xml")
+    if request.args.get("download"):
+        resp.headers["Content-Disposition"] = f'attachment; filename="kerf-test-finger-ladder-{nominal_mm:g}mm.svg"'
     return resp

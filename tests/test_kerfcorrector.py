@@ -506,6 +506,168 @@ def test_apply_manifest_leaves_unlisted_elements_untouched(tmp_path):
     assert orig_multi_d == new_multi_d
 
 
+# ---------------------------------------------------------------------------
+# tab_hole / tab_finger: extra clearance + tip chamfering
+#
+# Both kinds get the exact same depth-parity-based kerf shift as hole/edge --
+# `kind` still isn't what decides the sign or magnitude of that part. What's
+# new is a SECOND, always-inward nudge (extra clearance) layered on top, plus
+# optional corner chamfering, both driven by user-chosen mm values rather
+# than derived from the kerf number -- see apply_manifest's docstring for why
+# a tab's own length axis has zero net kerf sensitivity and so needs this
+# manual escape hatch to compensate for a miscalibrated kerf value at all.
+# ---------------------------------------------------------------------------
+
+def test_apply_manifest_tab_hole_clearance_matches_plain_hole_when_zero(tmp_path):
+    # tab_hole with clearance=0 must be numerically identical to plain
+    # "hole" -- the extra term should vanish, not merely become negligible.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    joint = _feature_by_id(elements, features, "multi", subpath_index=1)
+
+    manifest = joints.to_payload([joint])
+    manifest[0]["kind"] = "tab_hole"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=1.0, tab_hole_clearance_mm=0.0, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+    assert not stats.warnings
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    after = next(i for i in infos2 if i.element_index == joint.element_index and i.subpath_index == 1)
+    minx, miny, maxx, maxy = after.poly.bounds
+    scale = doc.scale_user_units_per_mm
+    assert abs((maxx - minx) / scale - 11.0) < 1e-6  # same as plain hole: 12.0 - 1.0
+    assert abs((maxy - miny) / scale - 2.0) < 1e-6    # same as plain hole: 3.0 - 1.0
+
+
+def test_apply_manifest_tab_hole_extra_clearance_shrinks_both_dims_further(tmp_path):
+    # A standalone closed loop has 4 independent walls, so extra clearance
+    # (unlike kerf-only) pulls EVERY wall inward regardless of depth parity --
+    # both dimensions shrink by the full clearance value on top of the
+    # kerf-only shrink, same as they're fully kerf-sensitive.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    joint = _feature_by_id(elements, features, "multi", subpath_index=1)
+
+    manifest = joints.to_payload([joint])
+    manifest[0]["kind"] = "tab_hole"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=1.0, tab_hole_clearance_mm=0.4, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    after = next(i for i in infos2 if i.element_index == joint.element_index and i.subpath_index == 1)
+    minx, miny, maxx, maxy = after.poly.bounds
+    scale = doc.scale_user_units_per_mm
+    # kerf-only would give 11.0 / 2.0 (see test above); the extra 0.4mm
+    # clearance shrinks both dims by a further full 0.4mm (2 walls x 0.2mm).
+    assert abs((maxx - minx) / scale - 10.6) < 1e-6  # 12.0 - 1.0 - 0.4
+    assert abs((maxy - miny) / scale - 1.6) < 1e-6    # 3.0 - 1.0 - 0.4
+
+
+def test_apply_manifest_tab_finger_extra_clearance_is_asymmetric(tmp_path):
+    # The mirror of the hole case: "stepboundary" is a windowed (attached)
+    # feature with only ONE independent wall on its short axis but TWO
+    # independent caps on its long axis (see
+    # test_apply_manifest_step_edge_asymmetric_kerf for the kerf-only
+    # baseline). Extra clearance nudges every member edge inward by the same
+    # half-clearance amount regardless of which axis it's on, so the
+    # single-wall axis loses half the clearance value while the two-cap axis
+    # loses the full clearance value (half from each cap).
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    step = _feature_by_id(elements, features, "stepboundary")
+
+    manifest = joints.to_payload([step])
+    manifest[0]["kind"] = "tab_finger"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=1.0, tab_finger_clearance_mm=0.4, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    features2 = joints.find_features(infos2, doc2.scale_user_units_per_mm, max_feature_mm=18.0)
+    after = _feature_by_id(els2, features2, "stepboundary")
+    assert abs(after.short_mm - 3.3) < 1e-6   # 3.0 + 0.5 (kerf) - 0.2 (half clearance, one wall)
+    assert abs(after.long_mm - 10.6) < 1e-6   # 10.0 + 1.0 (kerf) - 0.4 (half clearance x 2 caps)
+
+
+def test_apply_manifest_chamfer_adds_two_points_per_corner(tmp_path):
+    # A standalone closed-loop rectangle has all 4 corners as chamfer
+    # targets (including the tricky wraparound corner where the loop's
+    # Close meets its Move) -- each corner becomes 2 points, so a 4-vertex
+    # rectangle comes out as an 8-vertex octagon.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    joint = _feature_by_id(elements, features, "multi", subpath_index=1)
+
+    manifest = joints.to_payload([joint])
+    manifest[0]["kind"] = "tab_hole"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=0.2, chamfer_mm=0.3, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+    assert not stats.warnings
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    after = next(i for i in infos2 if i.element_index == joint.element_index and i.subpath_index == 1)
+    # shapely's exterior.coords repeats the first point as the last, so
+    # 8 unique vertices show up as 9 coordinates.
+    assert len(after.poly.exterior.coords) == 9
+
+
+def test_apply_manifest_chamfer_only_applies_to_tab_kinds(tmp_path):
+    # A plain "edge"/"hole" feature must come out untouched by a nonzero
+    # chamfer_mm -- chamfering is opt-in per feature via kind, not a global
+    # setting that silently reshapes everything in the manifest.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    joint = _feature_by_id(elements, features, "multi", subpath_index=1)
+    assert joint.kind == "hole"
+
+    manifest = joints.to_payload([joint])
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=0.2, chamfer_mm=0.3, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    after = next(i for i in infos2 if i.element_index == joint.element_index and i.subpath_index == 1)
+    assert len(after.poly.exterior.coords) == 5  # still a plain 4-vertex rectangle
+
+
 def test_apply_manifest_unknown_kind_is_skipped():
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)

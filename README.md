@@ -26,6 +26,52 @@ This is the same Flask app whether run locally or deployed (see
 "Deploying" below) — nothing about it depends on running on your own
 machine.
 
+### Fine-tuning tab fit: extra clearance and chamfering
+
+Kerf correction alone gets every *independently-cut* wall of a feature back
+to its drawn size — but a tab attached to a bigger boundary (a finger-joint
+tooth, or a tab headed into a hole) has one end that's shared with that
+boundary rather than independently cut, and that shared end has *zero* net
+sensitivity to the kerf value at all (its own boundary-side shift and its
+tip's shift cancel out on that axis — see the `apply_manifest` docstring in
+`joints.py` for the full derivation). So if your kerf number is even
+slightly too large, that error shows up entirely as extra length on the
+tab, with nothing on the tab's own geometry to compensate — a standalone
+hole doesn't have this problem, since all four of its walls are
+independently cut. This is why "just re-measure your kerf more carefully"
+only gets you so far.
+
+The review GUI's classification cycle now offers **tab (hole)** and
+**tab (finger)** in addition to `hole`/`edge` — which options appear
+depends on the feature's own structure (a container can never be a tab; a
+standalone closed loop can be `hole` or `tab (hole)` but never
+`tab (finger)`, since a finger joint is by definition attached to a bigger
+boundary; an attached feature can be either kind of tab but never the
+whole-subpath `hole` kind). Marking a tab with either kind unlocks two
+independent, manually-set adjustments (not derived from the kerf number,
+since the right amount depends on the tab's own fit, not just the
+machine):
+
+- **Extra clearance (mm)** — pulls the tab's own edges further toward the
+  material's interior than pure kerf correction alone would, for an easier
+  press-fit. Separate settings for tab-into-hole vs. finger-joint tabs,
+  since the two usually want different amounts.
+- **Chamfer (mm)** — clips a small lead-in bevel off each of the tab's tip
+  corners (the ones not shared with the surrounding boundary), so the tab
+  starts narrower and eases into its slot rather than needing to be exactly
+  aligned before any of it can enter.
+
+Both apply on top of the normal kerf correction and only to features
+you've explicitly marked as one of the two tab kinds — everything else
+(`hole`, `edge`) is unaffected regardless of what these are set to.
+
+The four apply-panel numbers (kerf, both clearances, chamfer) can be saved
+to a small JSON file (**Save settings**) and reloaded later (**Load
+settings**) — useful for keeping one file per material (e.g. "3mm birch
+ply.json") and reusing it across jobs instead of re-entering the same
+numbers every time. It's a plain downloadable file, not browser storage, so
+it travels with you across machines/browsers.
+
 The section below describes the same correction workflow as standalone
 command-line scripts (`review_joints.py` + `apply_joints.py`) that operate
 on local files directly, useful for automation/scripting, batch
@@ -388,10 +434,16 @@ this ever gets linked somewhere with real volume.
 - The review GUI needs a browser; there's no headless/scripted way to author
   a manifest other than hand-writing the JSON (see the format written by
   `review_joints.py` — a list of `{element_index, subpath_index, kind,
-  member_edges}` objects, where `kind` is `"hole"` or `"edge"` and
-  `member_edges` are the vertex indices of that feature's own edges). An
-  unrecognized `kind` or an empty `member_edges` is skipped with a warning
-  rather than guessed.
+  member_edges}` objects, where `kind` is `"hole"`, `"edge"`, `"tab_hole"`,
+  or `"tab_finger"`, and `member_edges` are the vertex indices of that
+  feature's own edges). An unrecognized `kind` or an empty `member_edges` is
+  skipped with a warning rather than guessed.
+- `tab_hole`/`tab_finger` extra clearance and chamfering (see "Fine-tuning
+  tab fit" above) are currently exposed only through the web review GUI
+  (`kerf_tool.py`)'s apply panel, not through `apply_joints.py`'s CLI flags
+  or the local `review_app.py` mirror — `joints.apply_manifest`'s
+  `tab_hole_clearance_mm`/`tab_finger_clearance_mm`/`chamfer_mm` parameters
+  are there for direct/scripted use in the meantime.
 
 ## Tapered Cup Etching Pattern
 

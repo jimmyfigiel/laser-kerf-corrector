@@ -61,7 +61,7 @@ import copy
 from dataclasses import dataclass, field
 
 from shapely.geometry import Polygon
-from svgelements import Path, Move, Close, Point
+from svgelements import Path, Move, Close, Line, Point
 
 from . import svgio, geometry
 
@@ -424,11 +424,23 @@ def _edge_outward_normal(info: SubpathInfo, vertex_index: int) -> tuple[float, f
     return geometry.edge_outward_normal(info.signed_area, direction)
 
 
+#: Kinds that get pulled in extra beyond pure kerf correction, for an easier
+#: press-fit -- see apply_manifest's docstring for why this needs to be a
+#: manually-chosen kind rather than something the kerf number alone can fix.
+_EXTRA_CLEARANCE_PARAM = {
+    "tab_hole": "tab_hole_clearance_mm",
+    "tab_finger": "tab_finger_clearance_mm",
+}
+
+
 def apply_manifest(
     doc: svgio.Document,
     elements,
     manifest: list[dict],
     kerf_mm: float,
+    tab_hole_clearance_mm: float = 0.0,
+    tab_finger_clearance_mm: float = 0.0,
+    chamfer_mm: float = 0.0,
     tolerance_mm: float = 0.02,
 ) -> ApplyStats:
     """Apply a reviewed feature manifest in place on `doc`. Only the specific
@@ -442,7 +454,30 @@ def apply_manifest(
     -- even depth -- inward/shrink if material is removed -- odd depth).
     Shared vertices between adjacent member edges naturally accumulate both
     edges' shifts, which is mathematically the same as a mitre-join offset
-    of the whole feature."""
+    of the whole feature.
+
+    `tab_hole`/`tab_finger` are the two exceptions to "kind is purely
+    cosmetic": a tab that's part of a bigger boundary (attached on one side,
+    only cut on the other -- e.g. the tip of a tab sticking out to plug into
+    a hole elsewhere) has a length axis that gets *no* net correction from
+    kerf at all, since the shared/attached side and the cut side move
+    together and cancel (this is real geometry, not a bug -- verified by
+    hand and numerically). That means the kerf number alone can't loosen a
+    too-tight tab on that axis, however precisely it's calibrated; these two
+    kinds let you dial in an *additional* pull-in, independent of kerf, by
+    kind, since a lone tab headed into an isolated hole and a repeating
+    finger-joint tab usually want different amounts. It's applied through
+    the exact same per-edge-outward-normal mechanism as kerf itself (see
+    `_extra_clearance_distance`), just as an independently-configurable
+    second term -- so a standalone tab's two independent width walls shrink
+    by the full clearance value (same as kerf would), while an attached
+    tab's single independently-cut length wall only gets half of it, mirroring
+    kerf's own asymmetry between those two cases.
+
+    `chamfer_mm` clips a 45-degree-ish lead-in off each tip corner of a
+    tab_hole/tab_finger feature (all corners for a standalone tab, just the
+    two tip corners -- not the ones shared with the surrounding boundary --
+    for an attached one), easing insertion. See `_apply_chamfers`."""
     scale = doc.scale_user_units_per_mm
     half_kerf = (kerf_mm / 2.0) * scale
 
@@ -475,15 +510,25 @@ def apply_manifest(
         if info is None:
             stats.warnings.append(f"{label}: element/subpath not found, skipped")
             continue
-        if entry.get("kind") not in ("hole", "edge"):
-            stats.warnings.append(f"{label}: unknown kind {entry.get('kind')!r}, skipped")
+        kind = entry.get("kind")
+        if kind not in ("hole", "edge", "tab_hole", "tab_finger"):
+            stats.warnings.append(f"{label}: unknown kind {kind!r}, skipped")
             continue
         member_edges = entry.get("member_edges") or []
         if not member_edges:
             stats.warnings.append(f"{label}: no member edges, skipped")
             continue
 
-        distance = half_kerf if info.depth % 2 == 0 else -half_kerf
+        extra_param = _EXTRA_CLEARANCE_PARAM.get(kind)
+        extra_mm = {"tab_hole_clearance_mm": tab_hole_clearance_mm,
+                    "tab_finger_clearance_mm": tab_finger_clearance_mm}.get(extra_param, 0.0)
+        half_extra = (extra_mm / 2.0) * scale
+        # Extra clearance always pulls the edge further toward the solid
+        # material's interior than pure kerf correction would, regardless of
+        # whether this subpath's own depth parity means kerf is growing or
+        # shrinking it -- "make the tab a bit smaller for an easier fit" is
+        # the same instruction either way.
+        distance = (half_kerf if info.depth % 2 == 0 else -half_kerf) - half_extra
         for v in member_edges:
             edge_owners.setdefault(key, {}).setdefault(v, set()).add(entry_idx)
             normal = _edge_outward_normal(info, v)
@@ -531,12 +576,101 @@ def apply_manifest(
             for i in indices:
                 shifts[i] = list(combined)
 
+    # --- chamfering: clip a lead-in off each tab_hole/tab_finger tip corner ---
+    # chamfer_points[key][vertex_index] = (point_A_root, point_B_root_or_None),
+    # the new point(s) that replace that corner. Computed from the FINAL
+    # (already kerf+clearance-shifted) neighbouring points, above, not the
+    # pre-correction ones, so the cut lines up with the actual edges the
+    # laser will follow. A closed-loop feature (a standalone tab, whole
+    # subpath) gets every corner chamfered; a windowed one (attached to a
+    # bigger boundary) only gets its own interior corners -- not the two
+    # endpoints shared with that boundary, which must stay put or the
+    # boundary would gap. "Closed loop" is derived from member_edges
+    # covering the whole period, not trusted from the manifest, since
+    # that's a structural fact apply_manifest can check for itself.
+    #
+    # The vertex where the loop closes (index == period) needs special
+    # handling: it's the one corner whose "outgoing" edge is the Move at
+    # index 0, not a Line -- and a Close segment ignores whatever `.end` is
+    # set on it, always snapping back to wherever the Move itself points
+    # (that's also why the existing coincident-vertex mirroring above works
+    # at all). So for that corner, point_B isn't a new trailing segment
+    # (there's nothing to draw after a Close) -- it's what the Move at
+    # index 0 needs to become instead, tracked in move_overrides.
+    chamfer_points: dict[tuple[int, int], dict[int, tuple[tuple[float, float], tuple[float, float] | None]]] = {}
+    move_overrides: dict[tuple[int, int], tuple[float, float]] = {}
+    if chamfer_mm > 0:
+        chamfer_dist = chamfer_mm * scale
+        for entry in manifest:
+            if entry.get("kind") not in ("tab_hole", "tab_finger"):
+                continue
+            key = (entry["element_index"], entry["subpath_index"])
+            info = info_by_key.get(key)
+            member_edges = entry.get("member_edges") or []
+            if info is None or not member_edges:
+                continue
+            segs = info.root_segments
+            period = len(segs) - 1
+            is_closed = len(member_edges) == period
+            targets = list(range(1, period + 1)) if is_closed else member_edges[:-1]
+            if not targets:
+                continue
+
+            shifts = vertex_shifts.get(key, {})
+
+            def final_pt(idx):
+                base = segs[idx].end
+                dx, dy = shifts.get(idx, (0.0, 0.0))
+                return (base.x + dx, base.y + dy)
+
+            for v in targets:
+                p_prev = final_pt(_cyclic_add(v, -1, period))
+                p_v = final_pt(v)
+                p_next = final_pt(_cyclic_add(v, 1, period))
+                in_dir = geometry._unit(geometry._sub(p_v, p_prev))
+                out_dir = geometry._unit(geometry._sub(p_next, p_v))
+                point_a = geometry._sub(p_v, geometry._scale(in_dir, chamfer_dist))
+                point_b = geometry._add(p_v, geometry._scale(out_dir, chamfer_dist))
+                if v == period:
+                    chamfer_points.setdefault(key, {})[v] = (point_a, None)
+                    move_overrides[key] = point_b
+                else:
+                    chamfer_points.setdefault(key, {})[v] = (point_a, point_b)
+
     for key, shifts in vertex_shifts.items():
         info = info_by_key[key]
         inv = info.transform.inverse()
+        entry_chamfers = chamfer_points.get(key, {})
+        move_pt = move_overrides.get(key)
+        period = len(info.root_segments) - 1
         new_local = []
         for i, (lseg, rseg) in enumerate(zip(info.local_segments, info.root_segments)):
-            if i in shifts:
+            if i == 0 and move_pt is not None:
+                m_local = inv.point_in_matrix_space(move_pt)
+                seg_copy = copy.copy(lseg)
+                seg_copy.end = Point(m_local[0], m_local[1])
+                new_local.append(seg_copy)
+            elif i in entry_chamfers and i == period:
+                # The Close segment ignores whatever `.end` we set on it,
+                # always snapping back to wherever the Move points (already
+                # redirected to point_B above) -- so instead of touching
+                # Close itself, insert a plain line reaching point_A right
+                # before it, and let Close's normal behavior draw the
+                # A->point_B diagonal that finishes the chamfer.
+                point_a, _ = entry_chamfers[i]
+                a_local = inv.point_in_matrix_space(point_a)
+                new_local.append(Line(end=Point(a_local[0], a_local[1])))
+                new_local.append(lseg)
+            elif i in entry_chamfers:
+                point_a, point_b = entry_chamfers[i]
+                a_local = inv.point_in_matrix_space(point_a)
+                seg_copy = copy.copy(lseg)
+                seg_copy.end = Point(a_local[0], a_local[1])
+                new_local.append(seg_copy)
+                if point_b is not None:
+                    b_local = inv.point_in_matrix_space(point_b)
+                    new_local.append(Line(end=Point(b_local[0], b_local[1])))
+            elif i in shifts:
                 dx, dy = shifts[i]
                 new_root = (rseg.end.x + dx, rseg.end.y + dy)
                 new_local_pt = inv.point_in_matrix_space(new_root)

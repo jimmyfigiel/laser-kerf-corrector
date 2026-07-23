@@ -122,6 +122,11 @@ PAGE = """<!doctype html>
      the same reason -- a big panel-wide fill would otherwise wash over
      everything. */
   #overlay-svg .edge { stroke: #3c96ff; }
+  /* tab_hole/tab_finger get their own colors so a chamfered/clearance-
+     adjusted tab stands out from a plain edge, but stay unfilled for the
+     same reason edge does. */
+  #overlay-svg .tab_hole { stroke: #ffb347; stroke-dasharray: 5 2; }
+  #overlay-svg .tab_finger { stroke: #b967ff; stroke-dasharray: 5 2; }
   #overlay-svg .ignored-merged { stroke: rgba(60,150,255,0.55); stroke-dasharray: 2 3; }
   #overlay-svg .hot { stroke: #ffd400; stroke-width: 2; }
   #sidebar { width: 360px; background: #262626; display: flex; flex-direction: column; border-left: 1px solid #444; overflow-y: auto; }
@@ -136,6 +141,8 @@ PAGE = """<!doctype html>
   .row .cls-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-left: 6px; }
   .cls-badge.hole { background: #ff9622; color: #201400; }
   .cls-badge.edge { background: #3c96ff; color: #001428; }
+  .cls-badge.tab_hole { background: #ffb347; color: #291a00; }
+  .cls-badge.tab_finger { background: #b967ff; color: #1c0029; }
   .cls-badge.ignored { background: #555; color: #ccc; }
   .row-controls { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
   .row-controls button { font-size: 11px; padding: 3px 8px; border: 1px solid #555; background: #333; color: #ddd; border-radius: 3px; cursor: pointer; }
@@ -178,16 +185,22 @@ PAGE = """<!doctype html>
     <div id="sidebar">
       <h2>Candidates</h2>
       <div class="sub">Auto-detected features. Every one is corrected the
-      same way: it ends up at exactly its own drawn size after cutting.
-      Orange = <b>hole</b> (material removed — worth a careful look, since
-      a missed or misplaced hole is visibly wrong). Blue = <b>edge</b>
-      (everything else: a solid tab, a notch, or a boundary's own plain
-      walls — all handled identically, so it doesn't matter which one it
-      is). Click any shape on the canvas to cycle ignored/hole/edge. If a
-      joint wasn't auto-detected (it stayed part of a boundary), use "+
-      Add missed feature" and click its two corners directly. Ctrl/Cmd+Z
-      undoes the last change. Click empty canvas space or press Escape to
-      clear a selection. Scroll to zoom, drag to pan.</div>
+      same way by default: it ends up at exactly its own drawn size after
+      cutting. Orange = <b>hole</b> (material removed — worth a careful
+      look, since a missed or misplaced hole is visibly wrong). Blue =
+      <b>edge</b> (everything else plain: a notch, or a boundary's own
+      walls). A tab that's too snug for comfort can be marked orange-dashed
+      <b>tab (hole)</b> or purple-dashed <b>tab (finger)</b> instead — both
+      get pulled in extra and chamfered per the clearance/chamfer settings
+      below, on top of the usual kerf correction; which of the two just
+      picks which clearance number applies, since a lone tab headed into an
+      isolated hole and a repeating finger-joint tab usually want different
+      amounts. Click any shape on the canvas to cycle its classification
+      (which options are offered depends on the shape). If a joint wasn't
+      auto-detected (it stayed part of a boundary), use "+ Add missed
+      feature" and click its two corners directly. Ctrl/Cmd+Z undoes the
+      last change. Click empty canvas space or press Escape to clear a
+      selection. Scroll to zoom, drag to pan.</div>
       <button id="reset-view" style="margin:0 14px 4px; width:calc(100% - 28px)">Reset view</button>
       <button id="add-mode" style="margin:0 14px 4px; width:calc(100% - 28px)">+ Add missed feature</button>
       <button id="undo-btn" style="margin:0 14px 10px; width:calc(100% - 28px)" disabled>Undo</button>
@@ -197,8 +210,19 @@ PAGE = """<!doctype html>
       <div id="apply-panel">
         <label>Kerf (total, mm)</label>
         <input type="number" step="0.01" id="r-kerf" value="0.15">
+        <label>Tab (hole) extra clearance (mm)</label>
+        <input type="number" step="0.01" id="r-tab-hole-clearance" value="0">
+        <label>Tab (finger) extra clearance (mm)</label>
+        <input type="number" step="0.01" id="r-tab-finger-clearance" value="0">
+        <label>Tab chamfer (mm, 0 = off)</label>
+        <input type="number" step="0.01" id="r-chamfer" value="0">
         <div class="actions"><button class="btn" id="r-apply">Apply correction</button></div>
         <div id="r-apply-report"></div>
+        <div class="actions" style="margin-top:14px">
+          <button class="btn" id="r-save-settings" type="button">Save settings</button>
+          <button class="btn" id="r-load-settings" type="button">Load settings</button>
+          <input type="file" id="r-load-settings-file" accept="application/json" style="display:none">
+        </div>
       </div>
     </div>
   </div>
@@ -256,7 +280,23 @@ document.getElementById('change-file').addEventListener('click', () => {
 
 // ---------------- review mode ----------------
 let DATA = [], state = [], polys = [], selectedIdx = null;
-const CYCLE = ['ignored', 'hole', 'edge'];
+
+// tab_hole/tab_finger get their own extra clearance + chamfer in
+// apply_manifest, unlike hole/edge which are cosmetic -- so unlike the
+// old flat CYCLE, which classification is offered depends on the
+// feature's own structure. A container (the leftover-boundary catch-all)
+// is never a tab or a hole. A closed-loop feature (whole subpath: a hole,
+// or a free-standing tab) can be a hole or a standalone tab_hole, but
+// never tab_finger, since a finger joint is by definition attached to a
+// bigger boundary. A windowed (attached) feature is never "the hole" kind
+// -- that's reserved for the whole-subpath case -- but can be either kind
+// of tab, since a single attached tab could be headed into a hole or be
+// one tooth of a finger joint; only you know which.
+function cycleOptions(d) {
+  if (d.is_container) return ['ignored', 'edge'];
+  if (d.is_closed_loop) return ['ignored', 'hole', 'edge', 'tab_hole'];
+  return ['ignored', 'edge', 'tab_hole', 'tab_finger'];
+}
 
 async function analyzeFile() {
   const status = document.getElementById('review-status');
@@ -431,8 +471,9 @@ function setClassification(i, newCls) {
 
 function cycle(i) {
   pushUndo();
-  const cur = CYCLE.indexOf(state[i].classification);
-  setClassification(i, CYCLE[(cur + 1) % CYCLE.length]);
+  const opts = cycleOptions(DATA[i]);
+  const cur = opts.indexOf(state[i].classification);
+  setClassification(i, opts[(cur + 1) % opts.length]);
   renderPoly(i);
   renderList();
   renderCounts();
@@ -569,10 +610,12 @@ async function addCustomFeature(element_index, subpath_index, p1, p2) {
 }
 
 function renderCounts() {
-  const counts = { hole: 0, edge: 0, ignored: 0 };
+  const counts = { hole: 0, edge: 0, tab_hole: 0, tab_finger: 0, ignored: 0 };
   state.forEach(s => counts[s.classification]++);
-  document.getElementById('counts').textContent =
-    `${DATA.length} features analyzed — ${counts.hole} hole, ${counts.edge} edge selected`;
+  let text = `${DATA.length} features analyzed — ${counts.hole} hole, ${counts.edge} edge`;
+  if (counts.tab_hole) text += `, ${counts.tab_hole} tab(hole)`;
+  if (counts.tab_finger) text += `, ${counts.tab_finger} tab(finger)`;
+  document.getElementById('counts').textContent = text + ' selected';
 }
 
 function renderList() {
@@ -586,7 +629,7 @@ function renderList() {
       <span class="cls-badge ${state[i].classification}">${state[i].classification}</span>`;
     const ctrl = document.createElement('div');
     ctrl.className = 'row-controls';
-    CYCLE.forEach(c => {
+    cycleOptions(d).forEach(c => {
       const b = document.createElement('button');
       b.textContent = c;
       if (state[i].classification === c) b.classList.add('active');
@@ -680,6 +723,9 @@ document.getElementById('r-apply').addEventListener('click', async () => {
   const body = {
     token: uploadToken,
     kerf: parseFloat(document.getElementById('r-kerf').value),
+    tab_hole_clearance_mm: parseFloat(document.getElementById('r-tab-hole-clearance').value) || 0,
+    tab_finger_clearance_mm: parseFloat(document.getElementById('r-tab-finger-clearance').value) || 0,
+    chamfer_mm: parseFloat(document.getElementById('r-chamfer').value) || 0,
     manifest,
   };
   const resp = await fetch(API + '/api/apply', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -700,6 +746,51 @@ document.getElementById('r-apply').addEventListener('click', async () => {
   link.textContent = 'Download ' + data.download_name;
   link.setAttribute('download', data.download_name);
   rep.appendChild(link);
+});
+
+// Settings profiles are just the 4 apply-panel numbers, saved as a
+// downloadable JSON file rather than localStorage -- these are meant to
+// travel with a material (e.g. "3mm birch ply.json"), reused across
+// different jobs/machines/browsers, not tied to this one browser's storage.
+function settingsProfile() {
+  return {
+    type: 'kerf-corrector-settings',
+    kerf_mm: parseFloat(document.getElementById('r-kerf').value) || 0,
+    tab_hole_clearance_mm: parseFloat(document.getElementById('r-tab-hole-clearance').value) || 0,
+    tab_finger_clearance_mm: parseFloat(document.getElementById('r-tab-finger-clearance').value) || 0,
+    chamfer_mm: parseFloat(document.getElementById('r-chamfer').value) || 0,
+  };
+}
+document.getElementById('r-save-settings').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(settingsProfile(), null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'kerf-settings.json';
+  link.click();
+  URL.revokeObjectURL(url);
+});
+document.getElementById('r-load-settings').addEventListener('click', () => {
+  document.getElementById('r-load-settings-file').click();
+});
+document.getElementById('r-load-settings-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let profile;
+  try {
+    profile = JSON.parse(await file.text());
+  } catch (err) {
+    alert('Could not read that file as JSON settings: ' + err.message);
+    return;
+  }
+  const fields = { kerf_mm: 'r-kerf', tab_hole_clearance_mm: 'r-tab-hole-clearance',
+                    tab_finger_clearance_mm: 'r-tab-finger-clearance', chamfer_mm: 'r-chamfer' };
+  for (const [key, id] of Object.entries(fields)) {
+    if (typeof profile[key] === 'number' && Number.isFinite(profile[key])) {
+      document.getElementById(id).value = profile[key];
+    }
+  }
 });
 </script>
 </body>
@@ -775,7 +866,12 @@ def apply():
         token = body["token"]
         doc = _load(token)
         elements = cli.select_elements(doc, None, include_fill=False)
-        stats = joints.apply_manifest(doc, elements, body["manifest"], float(body["kerf"]))
+        stats = joints.apply_manifest(
+            doc, elements, body["manifest"], float(body["kerf"]),
+            tab_hole_clearance_mm=float(body.get("tab_hole_clearance_mm") or 0),
+            tab_finger_clearance_mm=float(body.get("tab_finger_clearance_mm") or 0),
+            chamfer_mm=float(body.get("chamfer_mm") or 0),
+        )
         buf = io.BytesIO()
         svgio.save(doc, buf)
         result_bytes = buf.getvalue()

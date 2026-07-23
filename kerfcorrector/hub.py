@@ -17,8 +17,8 @@ TOOLS = [
     },
     {
         "name": "Kerf Finder",
-        "description": "Generate a test-cut pattern and calculate your laser's actual kerf "
-                        "from measurements, for use with the Kerf Corrector above.",
+        "description": "Cut two small test pieces to work out your kerf and tab-fit clearance, "
+                        "and download a settings profile for the Kerf Corrector above.",
         "url": kerf_finder_tool.bp.url_prefix + "/",
     },
     {

@@ -1,11 +1,21 @@
-"""Kerf-finding calibration tool: generate a downloadable test-cut SVG (see
-kerf_finder.py) and, once it's been cut and measured, calculate the actual
-kerf from caliper readings. A Flask Blueprint mounted alongside the other
-tools (see hub.py). Unlike kerf_tool.py/cup_etch_tool.py there's no upload
-or session state to manage here -- the generated file is a pure function of
-the form inputs, and the kerf calculation from measurements is plain
-arithmetic done client-side, so nothing needs to be held in memory between
-requests.
+"""Kerf-finding calibration tool: a three-stage flow that ends with a
+settings profile ready for the Kerf Corrector.
+
+1. Cut a plain nominal-size square, measure what's left, get the basic
+   kerf (see kerf_finder.build_kerf_square).
+2. Cut a "ladder" -- one fixed hole plus several tabs at increasing extra
+   clearance -- and note which tab press-fits the way you want, to get
+   tab_hole_clearance_mm (see kerf_finder.build_tab_hole_ladder).
+3. Fill in the two settings this tool doesn't yet calibrate physically
+   (tab_finger_clearance_mm, chamfer_mm -- see kerf_finder.py's module
+   docstring for why finger-joint clearance isn't generated here) and
+   download all four numbers as one kerf-settings.json.
+
+A Flask Blueprint mounted alongside the other tools (see hub.py). Like
+cup_etch_tool.py/kerf_tool.py's own upload store, nothing here needs
+session state: every generated file is a pure function of its query
+parameters, and the arithmetic (kerf from measurements, the final JSON
+profile) is plain client-side math on numbers the user types in.
 """
 
 from __future__ import annotations
@@ -15,14 +25,6 @@ from flask import Blueprint, Response, jsonify, request
 from . import kerf_finder
 
 bp = Blueprint("kerf_finder_tool", __name__, url_prefix="/kerf-finder")
-
-
-def _parse_params():
-    nominal_mm = float(request.args.get("nominal_mm", 3.0))
-    count = int(float(request.args.get("count", 5)))
-    step_mm = float(request.args.get("step_mm", 0.05))
-    slot_height_mm = float(request.args.get("slot_height_mm", 20.0))
-    return nominal_mm, count, step_mm, slot_height_mm
 
 
 PAGE = """<!doctype html>
@@ -50,22 +52,17 @@ PAGE = """<!doctype html>
   .btn.secondary { background: #3a3a3a; }
   .btn.secondary:hover { background: #454545; }
   .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  #preview-wrap { margin-top: 12px; background: #fff; border-radius: 6px; padding: 10px; overflow: auto; }
-  #preview { display: block; max-width: 100%; }
-  #gen-error { color: #f88; font-size: 12px; margin-top: 8px; }
-  table { border-collapse: collapse; width: 100%; margin-top: 4px; }
-  th, td { padding: 6px 8px; font-size: 12px; text-align: left; }
-  th { color: #999; font-weight: 500; border-bottom: 1px solid #444; }
-  td input { width: 100%; box-sizing: border-box; background: #2a2a2a; border: 1px solid #444; color: #ddd; padding: 6px; border-radius: 4px; font-size: 12px; }
-  td.kerf-cell { color: #ddd; font-family: monospace; }
-  td.rm { text-align: center; }
-  td.rm button { background: none; border: none; color: #888; cursor: pointer; font-size: 14px; }
-  td.rm button:hover { color: #f88; }
-  #summary { margin-top: 14px; padding: 12px; background: #1e1e1e; border-radius: 6px; }
-  #summary .value { font-size: 22px; font-weight: 700; color: #8fd0ff; }
-  #summary .n { font-size: 12px; color: #999; margin-left: 8px; }
-  #summary .warn { color: #e0a030; font-size: 12px; margin-top: 6px; }
-  #summary .hint { color: #999; font-size: 12px; margin-top: 6px; }
+  #square-preview-wrap, #ladder-preview-wrap { margin-top: 12px; background: #fff; border-radius: 6px; padding: 10px; overflow: auto; }
+  #square-preview-wrap img, #ladder-preview-wrap img { display: block; max-width: 100%; }
+  .gen-error { color: #f88; font-size: 12px; margin-top: 8px; }
+  .note { font-size: 12px; color: #888; margin-top: 6px; line-height: 1.4; }
+  #kerf-result, #profile-summary { margin-top: 14px; padding: 12px; background: #1e1e1e; border-radius: 6px; }
+  #kerf-result .value { font-size: 22px; font-weight: 700; color: #8fd0ff; }
+  #kerf-result .hint { font-size: 12px; color: #999; margin-top: 6px; }
+  #profile-summary table { border-collapse: collapse; width: 100%; }
+  #profile-summary td { padding: 3px 0; font-size: 13px; }
+  #profile-summary td.k { color: #aaa; }
+  #profile-summary td.v { text-align: right; font-family: monospace; color: #8fd0ff; }
 </style>
 </head>
 <body>
@@ -74,195 +71,201 @@ PAGE = """<!doctype html>
   <a class="action" href="/feedback/?tool=Kerf%20Finder" target="_blank">report a bug / suggest a feature</a>
 </div>
 <div id="body">
-  <p>Kerf varies by machine, power/speed settings, and material, so it's
-  worth measuring rather than guessing. Generate a test cut below, run it
-  through your laser at the settings you actually plan to use, measure the
-  results with calipers, then enter what you measured to get a kerf number
-  you can paste straight into the <a href="/kerf-corrector/" style="color:#6cf">Laser Kerf Corrector</a>.</p>
+  <p>Works out the numbers the <a href="/kerf-corrector/" style="color:#6cf">Laser Kerf Corrector</a>
+  needs for your machine/material combination: cut two small test pieces
+  below, measure them, and get a settings file with all four values ready
+  to use.</p>
 
   <section>
-    <h2>1. Generate a test cut</h2>
-    <p>A row of slots at widths straddling your nominal size, plus one
-    solid tab cut at exactly the nominal width for a press-fit test. Each
-    feature is labeled with its own drawn width.</p>
+    <h2>1. Find your basic kerf</h2>
+    <p>Cut this square out, measure what's left with calipers, and enter
+    what you got. The shortfall from the drawn size is your kerf &mdash;
+    cutting always removes a strip this wide from every edge, so a solid
+    square comes out smaller by exactly one kerf on each dimension.</p>
     <div class="fields">
-      <div class="field"><label>Nominal width (mm)</label><input type="number" id="f-nominal" value="3.0" step="0.01" min="0.01"></div>
-      <div class="field"><label>Number of slots</label><input type="number" id="f-count" value="5" step="1" min="2" max="15"></div>
-      <div class="field"><label>Step between slots (mm)</label><input type="number" id="f-step" value="0.05" step="0.01" min="0.01"></div>
-      <div class="field"><label>Slot height (mm)</label><input type="number" id="f-height" value="20" step="1" min="1"></div>
+      <div class="field"><label>Square size (mm)</label><input type="number" id="sq-nominal" value="25" step="0.1" min="0.1"></div>
     </div>
     <div class="actions">
-      <a class="btn" id="download-link" href="#">Download test SVG</a>
-      <button class="btn secondary" id="use-widths">Use these widths in the calculator below &darr;</button>
+      <a class="btn" id="sq-download" href="#">Download test square</a>
     </div>
-    <div id="gen-error"></div>
-    <div id="preview-wrap"><img id="preview" alt="test pattern preview"></div>
+    <div class="gen-error" id="sq-error"></div>
+    <div id="square-preview-wrap"><img id="sq-preview" alt="test square preview"></div>
+    <div class="fields" style="margin-top:14px">
+      <div class="field"><label>Measured width (mm)</label><input type="number" id="sq-measured-w" step="0.001"></div>
+      <div class="field"><label>Measured height (mm)</label><input type="number" id="sq-measured-h" step="0.001"></div>
+    </div>
+    <div class="note">Only one measurement is required &mdash; fill in both for a steadier average if the cut isn't perfectly square.</div>
+    <div id="kerf-result">
+      <span class="value" id="kerf-value">&mdash;</span>
+      <div class="hint">This carries down to step 2 automatically, and into the final settings file.</div>
+    </div>
   </section>
 
   <section>
-    <h2>2. Calculate your kerf</h2>
-    <p>For each slot you measured, enter the width you drew it at and the
-    width it actually came out at. Kerf is measured &minus; drawn for a
-    slot (cutting always makes a slot wider) &mdash; enter as many rows as
-    you have measurements for; one is enough, more gives a steadier
-    average.</p>
-    <table>
-      <thead><tr><th>Drawn (mm)</th><th>Measured (mm)</th><th>Kerf</th><th></th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <div class="actions" style="margin-top:8px">
-      <button class="btn secondary" id="add-row">+ Add row</button>
+    <h2>2. Fine-tune tab-into-hole fit</h2>
+    <p>One hole at a fixed size, plus several free-standing tabs cut a bit
+    smaller each time (kerf correction alone, then an increasing amount of
+    <em>extra</em> clearance on top). Try each tab in the hole and see
+    which one gives the press-fit you want &mdash; then read its printed
+    clearance value off the piece and enter it below.</p>
+    <div class="fields">
+      <div class="field"><label>Kerf (mm)</label><input type="number" id="ladder-kerf" step="0.001"></div>
+      <div class="field"><label>Hole/tab size (mm)</label><input type="number" id="ladder-nominal" value="10" step="0.1" min="0.1"></div>
+      <div class="field"><label>Number of tabs</label><input type="number" id="ladder-count" value="5" step="1" min="2" max="12"></div>
+      <div class="field"><label>Clearance step (mm)</label><input type="number" id="ladder-step" value="0.05" step="0.01" min="0.01"></div>
+      <div class="field"><label>Tab height (mm)</label><input type="number" id="ladder-height" value="15" step="1" min="1"></div>
     </div>
-    <div id="summary">
-      <span class="value" id="avg-kerf">&mdash;</span><span class="n" id="avg-n"></span>
-      <div class="warn" id="spread-warn" style="display:none"></div>
-      <div class="actions" style="margin-top:10px">
-        <button class="btn" id="copy-kerf" disabled>Copy value</button>
-        <span class="hint">Paste this into the Kerf field on the Laser Kerf Corrector page.</span>
-      </div>
+    <div class="actions">
+      <a class="btn" id="ladder-download" href="#">Download test ladder</a>
     </div>
+    <div class="gen-error" id="ladder-error"></div>
+    <div id="ladder-preview-wrap"><img id="ladder-preview" alt="tab/hole ladder preview"></div>
+    <div class="fields" style="margin-top:14px">
+      <div class="field"><label>Clearance that fit best (mm)</label><input type="number" id="tab-hole-clearance" value="0" step="0.01"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. Remaining settings &amp; download profile</h2>
+    <p>These two aren't physically calibrated by this tool yet:
+    finger-joint tabs have trickier correction math than a plain
+    tab-into-hole (their length and width axes shift by different
+    amounts), and chamfer only eases insertion rather than changing overall
+    tightness. Enter values you're comfortable with &mdash; 0 leaves either
+    one off.</p>
+    <div class="fields">
+      <div class="field"><label>Finger-joint tab clearance (mm)</label><input type="number" id="tab-finger-clearance" value="0" step="0.01"></div>
+      <div class="field"><label>Chamfer (mm)</label><input type="number" id="chamfer" value="0" step="0.01"></div>
+    </div>
+    <div id="profile-summary">
+      <table>
+        <tr><td class="k">Kerf</td><td class="v" id="ps-kerf">&mdash;</td></tr>
+        <tr><td class="k">Tab (hole) clearance</td><td class="v" id="ps-tab-hole">&mdash;</td></tr>
+        <tr><td class="k">Tab (finger) clearance</td><td class="v" id="ps-tab-finger">&mdash;</td></tr>
+        <tr><td class="k">Chamfer</td><td class="v" id="ps-chamfer">&mdash;</td></tr>
+      </table>
+    </div>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn" id="download-profile">Download kerf-settings.json</button>
+    </div>
+    <div class="note">Uses the same format the Kerf Corrector's Save/Load Settings feature reads, so once that's on the version you're running, its "Load settings" button imports all four numbers from this file in one step.</div>
   </section>
 </div>
 
 <script>
 const API = '__API_PREFIX__';
 
-// ---------------- 1. generate / preview ----------------
-function genParams() {
+function debounced(fn, ms) {
+  let t = null;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+// ---------------- 1. kerf square ----------------
+function sqParams() {
+  return { nominal_mm: document.getElementById('sq-nominal').value };
+}
+
+const refreshSquare = debounced(async () => {
+  const errBox = document.getElementById('sq-error');
+  const p = new URLSearchParams(sqParams());
+  const resp = await fetch(API + '/api/generate-square?' + p.toString());
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    errBox.textContent = data.error || 'Could not generate that square.';
+    return;
+  }
+  errBox.textContent = '';
+  const blob = await resp.blob();
+  document.getElementById('sq-preview').src = URL.createObjectURL(blob);
+  const nominal = parseFloat(sqParams().nominal_mm) || 0;
+  const link = document.getElementById('sq-download');
+  link.href = API + '/api/generate-square?' + new URLSearchParams({ ...sqParams(), download: 1 }).toString();
+  link.setAttribute('download', `kerf-test-square-${nominal}mm.svg`);
+}, 250);
+
+document.getElementById('sq-nominal').addEventListener('input', refreshSquare);
+refreshSquare();
+
+function recalcKerf() {
+  const nominal = parseFloat(sqParams().nominal_mm);
+  const w = parseFloat(document.getElementById('sq-measured-w').value);
+  const h = parseFloat(document.getElementById('sq-measured-h').value);
+  const measurements = [w, h].filter(v => isFinite(v));
+  const resultBox = document.getElementById('kerf-value');
+  if (!isFinite(nominal) || measurements.length === 0) {
+    resultBox.textContent = '—';
+    return;
+  }
+  const avgMeasured = measurements.reduce((a, b) => a + b, 0) / measurements.length;
+  const kerf = nominal - avgMeasured;
+  resultBox.textContent = `Kerf: ${kerf.toFixed(3)}mm`;
+  document.getElementById('ladder-kerf').value = kerf.toFixed(3);
+  refreshLadder();
+  updateProfileSummary();
+}
+['sq-measured-w', 'sq-measured-h', 'sq-nominal'].forEach(id =>
+  document.getElementById(id).addEventListener('input', recalcKerf));
+
+// ---------------- 2. tab/hole ladder ----------------
+function ladderParams() {
   return {
-    nominal_mm: document.getElementById('f-nominal').value,
-    count: document.getElementById('f-count').value,
-    step_mm: document.getElementById('f-step').value,
-    slot_height_mm: document.getElementById('f-height').value,
+    nominal_mm: document.getElementById('ladder-nominal').value,
+    kerf_mm: document.getElementById('ladder-kerf').value || '0',
+    count: document.getElementById('ladder-count').value,
+    step_mm: document.getElementById('ladder-step').value,
+    tab_height_mm: document.getElementById('ladder-height').value,
   };
 }
 
-function genUrl(extra) {
-  const p = new URLSearchParams({ ...genParams(), ...extra });
-  return API + '/api/generate?' + p.toString();
-}
-
-let debounceTimer = null;
-function refreshPreview() {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(async () => {
-    const errBox = document.getElementById('gen-error');
-    const url = genUrl({});
-    const resp = await fetch(url);
-    if (!resp.ok) {
-      const data = await resp.json().catch(() => ({}));
-      errBox.textContent = data.error || 'Could not generate that pattern.';
-      document.getElementById('download-link').classList.add('disabled');
-      return;
-    }
-    errBox.textContent = '';
-    const blob = await resp.blob();
-    document.getElementById('preview').src = URL.createObjectURL(blob);
-    const nominal = parseFloat(genParams().nominal_mm) || 0;
-    const link = document.getElementById('download-link');
-    link.href = genUrl({ download: 1 });
-    link.setAttribute('download', `kerf-test-${nominal}mm.svg`);
-  }, 250);
-}
-
-['f-nominal', 'f-count', 'f-step', 'f-height'].forEach(id =>
-  document.getElementById(id).addEventListener('input', refreshPreview));
-refreshPreview();
-
-document.getElementById('use-widths').addEventListener('click', async () => {
-  const resp = await fetch(API + '/api/widths?' + new URLSearchParams(genParams()).toString());
-  const data = await resp.json();
+const refreshLadder = debounced(async () => {
+  const errBox = document.getElementById('ladder-error');
+  const p = new URLSearchParams(ladderParams());
+  const resp = await fetch(API + '/api/generate-ladder?' + p.toString());
   if (!resp.ok) {
-    document.getElementById('gen-error').textContent = data.error || 'Could not compute widths.';
+    const data = await resp.json().catch(() => ({}));
+    errBox.textContent = data.error || 'Could not generate that ladder.';
     return;
   }
-  setRows(data.widths_mm.map(w => ({ drawn: w, measured: '' })));
+  errBox.textContent = '';
+  const blob = await resp.blob();
+  document.getElementById('ladder-preview').src = URL.createObjectURL(blob);
+  const nominal = parseFloat(ladderParams().nominal_mm) || 0;
+  const link = document.getElementById('ladder-download');
+  link.href = API + '/api/generate-ladder?' + new URLSearchParams({ ...ladderParams(), download: 1 }).toString();
+  link.setAttribute('download', `kerf-test-ladder-${nominal}mm.svg`);
+}, 250);
+
+['ladder-kerf', 'ladder-nominal', 'ladder-count', 'ladder-step', 'ladder-height'].forEach(id =>
+  document.getElementById(id).addEventListener('input', refreshLadder));
+refreshLadder();
+
+// ---------------- 3. profile ----------------
+function updateProfileSummary() {
+  document.getElementById('ps-kerf').textContent = (parseFloat(document.getElementById('ladder-kerf').value) || 0).toFixed(3) + 'mm';
+  document.getElementById('ps-tab-hole').textContent = (parseFloat(document.getElementById('tab-hole-clearance').value) || 0).toFixed(3) + 'mm';
+  document.getElementById('ps-tab-finger').textContent = (parseFloat(document.getElementById('tab-finger-clearance').value) || 0).toFixed(3) + 'mm';
+  document.getElementById('ps-chamfer').textContent = (parseFloat(document.getElementById('chamfer').value) || 0).toFixed(3) + 'mm';
+}
+['ladder-kerf', 'tab-hole-clearance', 'tab-finger-clearance', 'chamfer'].forEach(id =>
+  document.getElementById(id).addEventListener('input', updateProfileSummary));
+updateProfileSummary();
+
+document.getElementById('download-profile').addEventListener('click', () => {
+  const profile = {
+    type: 'kerf-corrector-settings',
+    kerf_mm: parseFloat(document.getElementById('ladder-kerf').value) || 0,
+    tab_hole_clearance_mm: parseFloat(document.getElementById('tab-hole-clearance').value) || 0,
+    tab_finger_clearance_mm: parseFloat(document.getElementById('tab-finger-clearance').value) || 0,
+    chamfer_mm: parseFloat(document.getElementById('chamfer').value) || 0,
+  };
+  const blob = new Blob([JSON.stringify(profile, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'kerf-settings.json';
+  link.click();
+  URL.revokeObjectURL(url);
 });
-
-// ---------------- 2. measurement calculator ----------------
-const rowsBody = document.getElementById('rows');
-
-function addRow(drawn = '', measured = '') {
-  const tr = document.createElement('tr');
-  tr.innerHTML = `
-    <td><input type="number" step="0.001" class="r-drawn" value="${drawn}"></td>
-    <td><input type="number" step="0.001" class="r-measured" value="${measured}"></td>
-    <td class="kerf-cell">&mdash;</td>
-    <td class="rm"><button title="Remove row">&times;</button></td>
-  `;
-  tr.querySelectorAll('input').forEach(inp => inp.addEventListener('input', recalc));
-  tr.querySelector('.rm button').addEventListener('click', () => {
-    if (rowsBody.children.length <= 1) return;
-    tr.remove();
-    recalc();
-  });
-  rowsBody.appendChild(tr);
-}
-
-function setRows(entries) {
-  rowsBody.innerHTML = '';
-  entries.forEach(e => addRow(e.drawn, e.measured));
-  recalc();
-}
-
-document.getElementById('add-row').addEventListener('click', () => { addRow(); recalc(); });
-
-let lastAvg = null;
-
-function recalc() {
-  const kerfs = [];
-  [...rowsBody.children].forEach(tr => {
-    const drawn = parseFloat(tr.querySelector('.r-drawn').value);
-    const measured = parseFloat(tr.querySelector('.r-measured').value);
-    const cell = tr.querySelector('.kerf-cell');
-    if (isFinite(drawn) && isFinite(measured)) {
-      const k = measured - drawn;
-      cell.textContent = k.toFixed(3) + 'mm';
-      kerfs.push(k);
-    } else {
-      cell.textContent = '—';
-    }
-  });
-
-  const avgBox = document.getElementById('avg-kerf');
-  const nBox = document.getElementById('avg-n');
-  const warnBox = document.getElementById('spread-warn');
-  const copyBtn = document.getElementById('copy-kerf');
-
-  if (kerfs.length === 0) {
-    avgBox.textContent = '—';
-    nBox.textContent = '';
-    warnBox.style.display = 'none';
-    copyBtn.disabled = true;
-    lastAvg = null;
-    return;
-  }
-
-  const avg = kerfs.reduce((a, b) => a + b, 0) / kerfs.length;
-  lastAvg = avg;
-  avgBox.textContent = avg.toFixed(3) + 'mm';
-  nBox.textContent = `average of ${kerfs.length} row${kerfs.length === 1 ? '' : 's'}`;
-  copyBtn.disabled = false;
-
-  const spread = Math.max(...kerfs) - Math.min(...kerfs);
-  if (kerfs.length > 1 && spread > 0.05) {
-    warnBox.style.display = 'block';
-    warnBox.textContent = `Rows disagree by ${spread.toFixed(3)}mm -- check for a measurement mistake or a slot that didn't cut cleanly before trusting this average.`;
-  } else {
-    warnBox.style.display = 'none';
-  }
-}
-
-document.getElementById('copy-kerf').addEventListener('click', async () => {
-  if (lastAvg === null) return;
-  await navigator.clipboard.writeText(lastAvg.toFixed(3));
-  const btn = document.getElementById('copy-kerf');
-  const original = btn.textContent;
-  btn.textContent = 'Copied!';
-  setTimeout(() => { btn.textContent = original; }, 1200);
-});
-
-setRows([{ drawn: '', measured: '' }, { drawn: '', measured: '' }, { drawn: '', measured: '' }]);
 </script>
 </body>
 </html>
@@ -274,25 +277,33 @@ def index():
     return PAGE.replace("__HUB_URL__", "/").replace("__API_PREFIX__", bp.url_prefix)
 
 
-@bp.route("/api/generate")
-def generate():
+@bp.route("/api/generate-square")
+def generate_square():
     try:
-        nominal_mm, count, step_mm, slot_height_mm = _parse_params()
-        pattern = kerf_finder.build_test_pattern(nominal_mm, count, step_mm, slot_height_mm)
+        nominal_mm = float(request.args.get("nominal_mm", 25.0))
+        square = kerf_finder.build_kerf_square(nominal_mm)
     except (ValueError, TypeError) as e:
         return jsonify({"error": str(e)}), 400
 
-    resp = Response(pattern.svg, mimetype="image/svg+xml")
+    resp = Response(square.svg, mimetype="image/svg+xml")
     if request.args.get("download"):
-        resp.headers["Content-Disposition"] = f'attachment; filename="kerf-test-{nominal_mm:g}mm.svg"'
+        resp.headers["Content-Disposition"] = f'attachment; filename="kerf-test-square-{nominal_mm:g}mm.svg"'
     return resp
 
 
-@bp.route("/api/widths")
-def widths():
+@bp.route("/api/generate-ladder")
+def generate_ladder():
     try:
-        nominal_mm, count, step_mm, _ = _parse_params()
-        w = kerf_finder.slot_widths_mm(nominal_mm, count, step_mm)
+        nominal_mm = float(request.args.get("nominal_mm", 10.0))
+        kerf_mm = float(request.args.get("kerf_mm", 0.0))
+        count = int(float(request.args.get("count", 5)))
+        step_mm = float(request.args.get("step_mm", 0.05))
+        tab_height_mm = float(request.args.get("tab_height_mm", 15.0))
+        ladder = kerf_finder.build_tab_hole_ladder(nominal_mm, kerf_mm, count, step_mm, tab_height_mm)
     except (ValueError, TypeError) as e:
         return jsonify({"error": str(e)}), 400
-    return jsonify({"widths_mm": w})
+
+    resp = Response(ladder.svg, mimetype="image/svg+xml")
+    if request.args.get("download"):
+        resp.headers["Content-Disposition"] = f'attachment; filename="kerf-test-ladder-{nominal_mm:g}mm.svg"'
+    return resp

@@ -36,6 +36,7 @@ _FONT_SIZE_MM = 3.2
 _LABEL_GAP_MM = 6.0  # vertical room reserved below each feature for its label
 _TOP_MARGIN_MM = 10.0
 _BOTTOM_MARGIN_MM = 6.0
+_STROKE_WIDTH_MM = 0.001 * 25.4  # 0.001in hairline, in the document's own mm units
 
 
 @dataclass
@@ -261,7 +262,7 @@ def build_tab_finger_ladder(
     socket_d = _correct_single_feature_d(socket_w, socket_h, nominal_mm, engagement_depth_mm, False, "edge", kerf_mm)
 
     pieces_svg = [f'<g transform="translate({gap_mm:.4f},{baseline_y:.4f})"><path d="{socket_d}" '
-                  f'fill="none" stroke="black" stroke-width="0.1"/></g>']
+                  f'fill="none" stroke="black" stroke-width="{_STROKE_WIDTH_MM:.5f}"/></g>']
     labels = [(gap_mm + socket_w / 2, baseline_y + socket_h + _LABEL_GAP_MM - 1.5, f"socket {nominal_mm:g}")]
 
     x = gap_mm + socket_w + gap_mm
@@ -269,7 +270,7 @@ def build_tab_finger_ladder(
         tab_d = _correct_single_feature_d(tab_w, tab_h, nominal_mm, engagement_depth_mm, True, "tab_finger", kerf_mm,
                                            tab_finger_clearance_mm=c)
         pieces_svg.append(f'<g transform="translate({x:.4f},{baseline_y:.4f})"><path d="{tab_d}" '
-                           f'fill="none" stroke="black" stroke-width="0.1"/></g>')
+                           f'fill="none" stroke="black" stroke-width="{_STROKE_WIDTH_MM:.5f}"/></g>')
         labels.append((x + tab_w / 2, baseline_y + tab_h + _LABEL_GAP_MM - 1.5, f"+{c:g}"))
         x += tab_w + gap_mm
 
@@ -285,7 +286,7 @@ def build_tab_finger_ladder(
         '<?xml version="1.0" encoding="UTF-8"?>',
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{total_w:.3f}mm" height="{total_h:.3f}mm" '
         f'viewBox="0 0 {total_w:.3f} {total_h:.3f}">',
-        f'<rect x="0" y="0" width="{total_w:.3f}" height="{total_h:.3f}" fill="none" stroke="black" stroke-width="0.1"/>',
+        f'<rect x="0" y="0" width="{total_w:.3f}" height="{total_h:.3f}" fill="none" stroke="black" stroke-width="{_STROKE_WIDTH_MM:.5f}"/>',
         *pieces_svg,
         *label_parts,
         "</svg>",
@@ -307,11 +308,11 @@ def _render_svg(
         # the sheet's own silhouette, so every nested rect below (the hole,
         # each tab) ends up genuinely cut *out of* solid material rather
         # than floating in space with nothing to test-fit against.
-        f'<rect x="0" y="0" width="{width_mm:.3f}" height="{height_mm:.3f}" fill="none" stroke="black" stroke-width="0.1"/>',
+        f'<rect x="0" y="0" width="{width_mm:.3f}" height="{height_mm:.3f}" fill="none" stroke="black" stroke-width="{_STROKE_WIDTH_MM:.5f}"/>',
     ]
     for x, y, w, h in rects:
         parts.append(
-            f'<rect x="{x:.4f}" y="{y:.4f}" width="{w:.4f}" height="{h:.4f}" fill="none" stroke="black" stroke-width="0.1"/>'
+            f'<rect x="{x:.4f}" y="{y:.4f}" width="{w:.4f}" height="{h:.4f}" fill="none" stroke="black" stroke-width="{_STROKE_WIDTH_MM:.5f}"/>'
         )
     for x, y, text in labels:
         # Filled text, unlike the fill:none cut geometry above -- if this

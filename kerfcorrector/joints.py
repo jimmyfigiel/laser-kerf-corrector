@@ -425,12 +425,51 @@ def _edge_outward_normal(info: SubpathInfo, vertex_index: int) -> tuple[float, f
 
 
 #: Kinds that get pulled in extra beyond pure kerf correction, for an easier
-#: press-fit -- see apply_manifest's docstring for why this needs to be a
+#: fit -- see apply_manifest's docstring for why this needs to be a
 #: manually-chosen kind rather than something the kerf number alone can fix.
-_EXTRA_CLEARANCE_PARAM = {
-    "tab_hole": "tab_hole_clearance_mm",
-    "tab_finger": "tab_finger_clearance_mm",
+#: Maps to its own settings-panel parameter name and whether it's a VOID
+#: kind (mortice/slot) rather than a SOLID one (tenon/teeth) -- see
+#: _extra_clearance_sign for why "void" alone isn't enough to know the sign.
+_EXTRA_CLEARANCE = {
+    "tenon": ("tenon_clearance_mm", False),
+    "teeth": ("teeth_clearance_mm", False),
+    "mortice": ("mortice_clearance_mm", True),
+    "slot": ("slot_clearance_mm", True),
 }
+
+
+def _extra_clearance_sign(is_void: bool, is_closed_loop: bool) -> int:
+    """The sign that makes "more clearance" actually mean "more room" for
+    this specific feature, along the same per-edge-outward-normal mechanism
+    kerf itself uses.
+
+    SOLID kinds (tenon/teeth) always use -1 (pull the tab's own edges back
+    toward its interior -- shrink it -- regardless of whether it's a
+    standalone tab or attached to a boundary): a protruding tab's own
+    outward normal always points further out into open space, the same
+    physical direction, whichever structural case it is.
+
+    VOID kinds (mortice/slot) are NOT that simple, and get this wrong if
+    treated the same way for both structural cases:
+    - A CLOSED-LOOP void (a standalone hole/mortice) has its OWN,
+      independently-wound boundary, separate from anything it might be
+      nested inside -- its outward normal points away from ITS OWN void
+      interior, so +1 (push further outward) enlarges it, mirroring how -1
+      shrinks a closed-loop solid tab.
+    - A WINDOWED void (a notch/slot cut into a bigger boundary) has no
+      separate winding of its own -- its member edges are just part of the
+      SAME boundary loop as the solid material around them, so their
+      outward normal points AWAY FROM THAT SOLID, i.e. into the notch's own
+      cavity. Two opposing notch walls pushed further into their SHARED
+      cavity move TOWARD each other, not apart -- so +1 here would
+      CONVERGE (shrink) the notch, the opposite of "more clearance".
+      -1 is what actually enlarges it.
+    Verified against a real finger-jointed test file where a windowed slot
+    treated with the closed-loop sign silently got *tighter* with more
+    clearance requested -- exactly backwards."""
+    if not is_void:
+        return -1
+    return 1 if is_closed_loop else -1
 
 
 def apply_manifest(
@@ -438,8 +477,10 @@ def apply_manifest(
     elements,
     manifest: list[dict],
     kerf_mm: float,
-    tab_hole_clearance_mm: float = 0.0,
-    tab_finger_clearance_mm: float = 0.0,
+    tenon_clearance_mm: float = 0.0,
+    teeth_clearance_mm: float = 0.0,
+    mortice_clearance_mm: float = 0.0,
+    slot_clearance_mm: float = 0.0,
     chamfer_mm: float = 0.0,
     tolerance_mm: float = 0.02,
 ) -> ApplyStats:
@@ -456,28 +497,49 @@ def apply_manifest(
     edges' shifts, which is mathematically the same as a mitre-join offset
     of the whole feature.
 
-    `tab_hole`/`tab_finger` are the two exceptions to "kind is purely
-    cosmetic": a tab that's part of a bigger boundary (attached on one side,
-    only cut on the other -- e.g. the tip of a tab sticking out to plug into
-    a hole elsewhere) has a length axis that gets *no* net correction from
-    kerf at all, since the shared/attached side and the cut side move
-    together and cancel (this is real geometry, not a bug -- verified by
-    hand and numerically). That means the kerf number alone can't loosen a
-    too-tight tab on that axis, however precisely it's calibrated; these two
-    kinds let you dial in an *additional* pull-in, independent of kerf, by
-    kind, since a lone tab headed into an isolated hole and a repeating
-    finger-joint tab usually want different amounts. It's applied through
-    the exact same per-edge-outward-normal mechanism as kerf itself (see
-    `_extra_clearance_distance`), just as an independently-configurable
-    second term -- so a standalone tab's two independent width walls shrink
-    by the full clearance value (same as kerf would), while an attached
-    tab's single independently-cut length wall only gets half of it, mirroring
-    kerf's own asymmetry between those two cases.
+    `mortice`/`tenon`/`teeth`/`slot` are the exceptions to "kind is purely
+    cosmetic" -- the two-sided vocabulary for interlocking joints, on top of
+    the plain `hole`/`edge` labels: a TENON is the tab that plugs into a
+    MORTICE's socket; TEETH are a finger/comb joint's individual tabs; a
+    SLOT is a sliding-fit channel (e.g. a dado a panel slides into), which
+    can show up either as its own enclosed cutout or as a channel open at a
+    boundary's edge. What all four share: a feature that's part of a bigger
+    boundary (attached on one side, only cut on the other -- e.g. the tip of
+    a tab sticking out to plug into a hole elsewhere) has a length axis that
+    gets *no* net correction from kerf at all, since the shared/attached
+    side and the cut side move together and cancel (this is real geometry,
+    not a bug -- verified by hand and numerically). That means the kerf
+    number alone can't loosen a too-tight fit on that axis, however
+    precisely it's calibrated; these four kinds each let you dial in an
+    *additional* clearance, independent of kerf, since a tenon, a repeating
+    finger tooth, a mortice socket, and a sliding slot usually all want
+    different amounts. It's applied through the exact same
+    per-edge-outward-normal mechanism as kerf itself, just as an
+    independently-configurable second term -- so a standalone feature's two
+    independent width walls get the full clearance value (same as kerf
+    would), while an attached feature's single independently-cut length wall
+    only gets half of it, mirroring kerf's own asymmetry between those two
+    cases.
+
+    tenon/teeth are SOLID (the clearance shrinks them, same direction as
+    "make the tab a bit smaller for an easier fit"); mortice/slot are VOIDS
+    (the clearance instead enlarges them -- a socket or channel needs to
+    grow, not shrink, for an easier fit around a fixed-size mate). For a
+    void, WHICH SIGN achieves that depends on structure, not just kind: a
+    standalone mortice (its own closed loop, independently wound) enlarges
+    with the same sign that shrinks a standalone tenon; a windowed slot cut
+    into a bigger boundary shares that boundary's own winding instead, so
+    its member edges' outward normals point INTO the shared cavity -- and
+    two opposing notch walls pushed further into a cavity they both bound
+    move toward each other, not apart. Getting this wrong doesn't just
+    undershoot: it silently tightens a windowed void exactly when the user
+    asked for it to loosen. See `_extra_clearance_sign`.
 
     `chamfer_mm` clips a 45-degree-ish lead-in off each tip corner of a
-    tab_hole/tab_finger feature (all corners for a standalone tab, just the
-    two tip corners -- not the ones shared with the surrounding boundary --
-    for an attached one), easing insertion. See `_apply_chamfers`."""
+    tenon feature (all corners for a standalone tab, just the two tip
+    corners -- not the ones shared with the surrounding boundary -- for an
+    attached one), easing insertion. Deliberately tenon-only: not applied to
+    teeth or to mortice/slot (the receiving side)."""
     scale = doc.scale_user_units_per_mm
     half_kerf = (kerf_mm / 2.0) * scale
 
@@ -511,7 +573,7 @@ def apply_manifest(
             stats.warnings.append(f"{label}: element/subpath not found, skipped")
             continue
         kind = entry.get("kind")
-        if kind not in ("hole", "edge", "tab_hole", "tab_finger"):
+        if kind not in ("hole", "edge", "mortice", "tenon", "teeth", "slot"):
             stats.warnings.append(f"{label}: unknown kind {kind!r}, skipped")
             continue
         member_edges = entry.get("member_edges") or []
@@ -519,16 +581,26 @@ def apply_manifest(
             stats.warnings.append(f"{label}: no member edges, skipped")
             continue
 
-        extra_param = _EXTRA_CLEARANCE_PARAM.get(kind)
-        extra_mm = {"tab_hole_clearance_mm": tab_hole_clearance_mm,
-                    "tab_finger_clearance_mm": tab_finger_clearance_mm}.get(extra_param, 0.0)
+        clearance_lookup = {
+            "tenon_clearance_mm": tenon_clearance_mm,
+            "teeth_clearance_mm": teeth_clearance_mm,
+            "mortice_clearance_mm": mortice_clearance_mm,
+            "slot_clearance_mm": slot_clearance_mm,
+        }
+        extra_param, is_void_kind = _EXTRA_CLEARANCE.get(kind, (None, False))
+        extra_mm = clearance_lookup.get(extra_param, 0.0)
         half_extra = (extra_mm / 2.0) * scale
-        # Extra clearance always pulls the edge further toward the solid
-        # material's interior than pure kerf correction would, regardless of
-        # whether this subpath's own depth parity means kerf is growing or
-        # shrinking it -- "make the tab a bit smaller for an easier fit" is
-        # the same instruction either way.
-        distance = (half_kerf if info.depth % 2 == 0 else -half_kerf) - half_extra
+        period = len(info.root_segments) - 1
+        is_closed_loop = len(member_edges) == period
+        extra_sign = _extra_clearance_sign(is_void_kind, is_closed_loop)
+        # Extra clearance always pulls the edge further along its OWN
+        # solid-vs-void direction than pure kerf correction would, regardless
+        # of whether this subpath's own depth parity means kerf is growing or
+        # shrinking it -- "give this joint a bit more room" is the same
+        # instruction either way. See _extra_clearance_sign for why that
+        # direction depends on structure (closed-loop vs. windowed), not
+        # just solid-vs-void, for the two VOID kinds.
+        distance = (half_kerf if info.depth % 2 == 0 else -half_kerf) + extra_sign * half_extra
         for v in member_edges:
             edge_owners.setdefault(key, {}).setdefault(v, set()).add(entry_idx)
             normal = _edge_outward_normal(info, v)
@@ -576,7 +648,7 @@ def apply_manifest(
             for i in indices:
                 shifts[i] = list(combined)
 
-    # --- chamfering: clip a lead-in off each tab_hole/tab_finger tip corner ---
+    # --- chamfering: clip a lead-in off each tenon tip corner (not teeth) ---
     # chamfer_points[key][vertex_index] = (point_A_root, point_B_root_or_None),
     # the new point(s) that replace that corner. Computed from the FINAL
     # (already kerf+clearance-shifted) neighbouring points, above, not the
@@ -602,7 +674,7 @@ def apply_manifest(
     if chamfer_mm > 0:
         chamfer_dist = chamfer_mm * scale
         for entry in manifest:
-            if entry.get("kind") not in ("tab_hole", "tab_finger"):
+            if entry.get("kind") != "tenon":
                 continue
             key = (entry["element_index"], entry["subpath_index"])
             info = info_by_key.get(key)

@@ -1,0 +1,5 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="100mm" viewBox="0 0 200 100">
+  <path class="cut" id="panelA" fill="none" stroke="black" d="M 0,0 L 100,0 L 100,60 L 53,60 L 53,70 L 47,70 L 47,60 L 0,60 Z"/>
+  <path class="cut" id="panelB" fill="none" stroke="black" d="M -0.3,-0.3 L 40.3,-0.3 L 40.3,40.3 L -0.3,40.3 Z M 257.3,15.3 l 5.4,0 l 0,9.4 l -5.4,0 z"/>
+</svg>

@@ -495,6 +495,16 @@ makes a continuous-tone photo still show shading once etched (a laser can
 only mark or not mark a given spot) -- leave it off for a logo or line art
 that's already high-contrast.
 
+A **mm / in** toggle above the geometry fields converts every length field
+in place (not just the label) when switched, so 8in and 203mm read as the
+same physical size either way -- the backend and all the math underneath
+still work in mm throughout; only what's typed and displayed changes.
+Resolution stays in DPI regardless, since DPI is already inch-based by
+definition. Each field's inline explanation (what used to sit permanently
+underneath it) is now a "?" icon next to its label -- click it for a
+popover with that field's explanation, click elsewhere or press Escape to
+dismiss it.
+
 The uploaded image itself is never cropped or stretched: it's scaled to
 the design width while keeping its own proportions, and the design's
 actual height is whatever that scaling works out to (a wide image ends up

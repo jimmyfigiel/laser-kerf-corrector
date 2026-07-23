@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="100mm" viewBox="0 0 200 100">
+  <path class="cut" id="panelA" fill="none" stroke="black" d="M0,0 L100,0 L100,60 L53,60 L53,70 L47,70 L47,60 L0,60 Z" />
+  <path class="cut" id="panelB" fill="none" stroke="black" transform="translate(120,0)" d="M0,0 L40,0 L40,40 L0,40 Z m17,15 l6,0 l0,10 l-6,0 z" />
+</svg>

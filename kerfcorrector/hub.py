@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from flask import Flask
 
-from . import cup_etch_tool, deploy, feedback, kerf_tool
+from . import cup_etch_tool, deploy, feedback, kerf_finder_tool, kerf_tool
 
 TOOLS = [
     {
@@ -14,6 +14,12 @@ TOOLS = [
         "description": "Compensate laser-cut SVG plans for kerf: shrink holes and grow or "
                         "shrink every other edge as needed so the finished part matches the drawing.",
         "url": kerf_tool.bp.url_prefix + "/",
+    },
+    {
+        "name": "Kerf Finder",
+        "description": "Generate a test-cut pattern and calculate your laser's actual kerf "
+                        "from measurements, for use with the Kerf Corrector above.",
+        "url": kerf_finder_tool.bp.url_prefix + "/",
     },
     {
         "name": "Tapered Cup Etching Pattern",
@@ -56,6 +62,7 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024  # 20MB; these are laser-plan SVGs, not photos
     app.register_blueprint(kerf_tool.bp)
+    app.register_blueprint(kerf_finder_tool.bp)
     app.register_blueprint(cup_etch_tool.bp)
     app.register_blueprint(feedback.bp)
     app.register_blueprint(deploy.bp)

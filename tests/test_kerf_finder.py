@@ -222,7 +222,7 @@ def test_finger_ladder_tab_width_tracks_kerf_minus_clearance():
     # full kerf grows it, full clearance shrinks it back.
     for clearance in (0.0, 0.1, 0.2):
         corrected = kerf_finder._correct_single_feature_d(
-            25.0, 10.0, 10.0, 8.0, True, "tab_finger", 0.16, tab_finger_clearance_mm=clearance)
+            25.0, 10.0, 10.0, 8.0, True, "teeth", 0.16, teeth_clearance_mm=clearance)
         import re as _re
         xs = sorted(set(round(float(x), 4) for x, y in _re.findall(r"(-?[\d.]+),(-?[\d.]+)", corrected)) - {0.0, 25.0})
         assert xs[1] - xs[0] == pytest.approx(10.0 + 0.16 - clearance)
@@ -234,7 +234,7 @@ def test_finger_ladder_tab_length_gets_half_kerf_and_half_clearance():
     # there, not the full amount.
     for clearance in (0.0, 0.1, 0.2):
         corrected = kerf_finder._correct_single_feature_d(
-            25.0, 10.0, 10.0, 8.0, True, "tab_finger", 0.16, tab_finger_clearance_mm=clearance)
+            25.0, 10.0, 10.0, 8.0, True, "teeth", 0.16, teeth_clearance_mm=clearance)
         import re as _re
         ys = sorted(set(round(float(y), 4) for x, y in _re.findall(r"(-?[\d.]+),(-?[\d.]+)", corrected)))
         tip_y = ys[0]  # most negative y is the protruding tip

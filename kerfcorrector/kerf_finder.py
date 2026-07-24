@@ -19,8 +19,10 @@ structure, analyzed, corrected, then read back out -- rather than
 reimplementing the shift math directly in this module.
 
 All three test cuts feed the same settings profile the Kerf Corrector's
-Save/Load Settings feature reads: kerf_mm, tab_hole_clearance_mm,
-tab_finger_clearance_mm, chamfer_mm.
+Save/Load Settings feature reads: kerf_mm, tenon_clearance_mm,
+teeth_clearance_mm, chamfer_mm (mortice_clearance_mm and
+slot_clearance_mm also exist in that profile, but aren't covered by a
+dedicated ladder here yet -- see docs/calibration-process.md).
 """
 
 from __future__ import annotations
@@ -93,7 +95,7 @@ def build_tab_hole_ladder(
     so cutting -- which enlarges it -- brings it back to nominal_mm) plus
     `count` free-standing tabs, each corrected by kerf *and* an increasing
     extra clearance (tab grows by the full kerf, same as the real
-    corrector's standalone `tab_hole` kind, then shrinks again by its own
+    corrector's standalone `tenon` kind, then shrinks again by its own
     clearance value) -- see joints.py's apply_manifest for the shared
     formula this mirrors: distance = (+-half_kerf) - half_extra per edge,
     which for a rectangle's two independent parallel walls totals kerf-extra
@@ -190,7 +192,7 @@ def _correct_single_feature_d(
     protrude: bool,
     kind: str,
     kerf_mm: float,
-    tab_finger_clearance_mm: float = 0.0,
+    teeth_clearance_mm: float = 0.0,
 ) -> str:
     """Build one isolated panel+feature shape, run it through the real
     joints.apply_manifest, and return the corrected path 'd'. Isolated
@@ -209,7 +211,7 @@ def _correct_single_feature_d(
     doc = svgio.load(io.BytesIO(svg_str.encode("utf-8")))
     elements = list(svgio.iter_shape_elements(doc.root))
     manifest = [{"element_index": 0, "subpath_index": 0, "kind": kind, "member_edges": member_edges}]
-    joints.apply_manifest(doc, elements, manifest, kerf_mm, tab_finger_clearance_mm=tab_finger_clearance_mm)
+    joints.apply_manifest(doc, elements, manifest, kerf_mm, teeth_clearance_mm=teeth_clearance_mm)
     return elements[0].get("d")
 
 
@@ -224,7 +226,7 @@ def build_tab_finger_ladder(
     kerf alone -- same as a plain `edge` feature, no clearance term applies
     to the mating slot side) plus `count` free-standing tab/carrier pieces,
     each a tab protruding from its own small carrier, corrected by kerf and
-    an increasing tab_finger_clearance_mm. Unlike build_tab_hole_ladder's
+    an increasing teeth_clearance_mm. Unlike build_tab_hole_ladder's
     closed-form rectangle math, every corrected shape here comes from the
     real apply_manifest -- see that function's docstring for why an
     attached tab's length and width axes need to go through it rather than
@@ -267,8 +269,8 @@ def build_tab_finger_ladder(
 
     x = gap_mm + socket_w + gap_mm
     for c in clearances:
-        tab_d = _correct_single_feature_d(tab_w, tab_h, nominal_mm, engagement_depth_mm, True, "tab_finger", kerf_mm,
-                                           tab_finger_clearance_mm=c)
+        tab_d = _correct_single_feature_d(tab_w, tab_h, nominal_mm, engagement_depth_mm, True, "teeth", kerf_mm,
+                                           teeth_clearance_mm=c)
         pieces_svg.append(f'<g transform="translate({x:.4f},{baseline_y:.4f})"><path d="{tab_d}" '
                            f'fill="none" stroke="black" stroke-width="{_STROKE_WIDTH_MM:.5f}"/></g>')
         labels.append((x + tab_w / 2, baseline_y + tab_h + _LABEL_GAP_MM - 1.5, f"+{c:g}"))

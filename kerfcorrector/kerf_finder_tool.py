@@ -5,10 +5,10 @@ settings profile ready for the Kerf Corrector.
    kerf (see kerf_finder.build_kerf_square).
 2. Cut a tab-into-hole "ladder" -- one fixed hole plus several tabs at
    increasing extra clearance -- and note which tab press-fits the way you
-   want, to get tab_hole_clearance_mm (see kerf_finder.build_tab_hole_ladder).
+   want, to get tenon_clearance_mm (see kerf_finder.build_tab_hole_ladder).
 3. Cut a tab-into-finger-joint ladder -- one fixed mating slot plus
    several tab/carrier pieces at increasing extra clearance -- the same
-   idea as step 2, but for finger joints, to get tab_finger_clearance_mm
+   idea as step 2, but for finger joints, to get teeth_clearance_mm
    (see kerf_finder.build_tab_finger_ladder).
 4. Fill in chamfer_mm (not physically calibrated here -- it eases
    insertion rather than changing tightness) and download all four
@@ -311,8 +311,8 @@ document.getElementById('download-profile').addEventListener('click', () => {
   const profile = {
     type: 'kerf-corrector-settings',
     kerf_mm: parseFloat(document.getElementById('ladder-kerf').value) || 0,
-    tab_hole_clearance_mm: parseFloat(document.getElementById('tab-hole-clearance').value) || 0,
-    tab_finger_clearance_mm: parseFloat(document.getElementById('tab-finger-clearance').value) || 0,
+    tenon_clearance_mm: parseFloat(document.getElementById('tab-hole-clearance').value) || 0,
+    teeth_clearance_mm: parseFloat(document.getElementById('tab-finger-clearance').value) || 0,
     chamfer_mm: parseFloat(document.getElementById('chamfer').value) || 0,
   };
   const blob = new Blob([JSON.stringify(profile, null, 2)], {type: 'application/json'});

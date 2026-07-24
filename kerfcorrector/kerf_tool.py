@@ -155,6 +155,15 @@ PAGE = """<!doctype html>
   .row-controls button.active { background: #567; border-color: #789; }
   #apply-panel { padding: 14px; }
   #status { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.6); padding: 6px 10px; border-radius: 4px; font-size: 12px; pointer-events: none; }
+  .help-icon { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;
+    border-radius: 50%; background: #3c3c3c; color: #9c9c9c; font-size: 10px; font-weight: 700;
+    cursor: pointer; margin-left: 5px; vertical-align: middle; user-select: none; line-height: 1; }
+  .help-icon:hover, .help-icon.active { background: #3c6e96; color: #fff; }
+  #help-popover { display: none; position: fixed; max-width: 320px; background: #2f2f2f; border: 1px solid #555;
+    border-radius: 6px; padding: 10px 12px; font-size: 12px; color: #ccc; line-height: 1.45; z-index: 200;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.6); }
+  #help-popover.open { display: block; }
+  #help-popover b { color: #fff; }
 </style>
 </head>
 <body>
@@ -189,33 +198,7 @@ PAGE = """<!doctype html>
       <div id="status"></div>
     </div>
     <div id="sidebar">
-      <h2>Candidates</h2>
-      <div class="sub">Auto-detected features. Every one is corrected the
-      same way by default: it ends up at exactly its own drawn size after
-      cutting. Orange = <b>hole</b> (material removed — worth a careful
-      look, since a missed or misplaced hole is visibly wrong). Blue =
-      <b>edge</b> (everything else plain: a boundary's own leftover walls).
-      A tab or notch is auto-classified into one of four dashed kinds, each
-      with its own extra-clearance number below (independent of kerf,
-      since kerf alone can't fix a fit issue on an attached feature's
-      length axis — see the README), starting from what its own shape
-      already says: orange <b>tenon</b> (a lone protruding tab — clearance
-      shrinks it), purple <b>teeth</b> (2+ similarly-sized protruding tabs
-      on the same shape, a repeating finger-joint pattern — clearance
-      shrinks them too), and pink <b>slot</b> (a recessed notch or
-      sliding-fit channel — clearance grows it). Light-orange
-      <b>mortice</b> (the socket a tenon plugs into — clearance grows the
-      opening) is the one exception never auto-suggested, since an
-      enclosed hole could just as easily be decorative — reclassify a
-      <b>hole</b> into it by hand. Every auto-classification is only a
-      starting suggestion; click any shape on the canvas to cycle it to
-      something else (which options are offered depends on the shape).
-      Tenon also gets chamfered per the chamfer setting below, for an
-      easier lead-in (teeth don't). If a joint wasn't auto-detected at all
-      (it stayed part of a boundary), use "+ Add missed feature" and click
-      its two corners directly. Ctrl/Cmd+Z undoes the last change. Click
-      empty canvas space or press Escape to clear a selection. Scroll to
-      zoom, drag to pan.</div>
+      <h2>Candidates <span class="help-icon" id="candidates-help">?</span></h2>
       <button id="reset-view" style="margin:0 14px 4px; width:calc(100% - 28px)">Reset view</button>
       <button id="add-mode" style="margin:0 14px 4px; width:calc(100% - 28px)">+ Add missed feature</button>
       <button id="undo-btn" style="margin:0 14px 10px; width:calc(100% - 28px)" disabled>Undo</button>
@@ -250,6 +233,65 @@ PAGE = """<!doctype html>
 <script>
 const API = '__API_PREFIX__';
 let uploadToken = null, uploadFilename = null;
+
+// ---------------- help popover ----------------
+// Same shared-popover pattern as the cup-etch tool's help icons: one
+// popover element positioned next to whichever "?" was clicked, rather
+// than a per-field tooltip. Only one icon here (the whole classification
+// explanation), so its content is set directly in the click handler
+// instead of read from a per-icon data attribute.
+const CANDIDATES_HELP_HTML = `Auto-detected features. Every one is corrected the
+same way by default: it ends up at exactly its own drawn size after
+cutting. Orange = <b>hole</b> (material removed &mdash; worth a careful
+look, since a missed or misplaced hole is visibly wrong). Blue =
+<b>edge</b> (everything else plain: a notch, or a boundary's own
+walls). A joint that's too snug or too loose can instead be marked as
+one of four dashed kinds, each with its own extra-clearance number
+below (independent of kerf, since kerf alone can't fix a fit issue on
+an attached feature's length axis &mdash; see the README): light-orange
+<b>mortice</b> (the socket a tenon plugs into &mdash; clearance grows the
+opening), orange <b>tenon</b> (the tab that plugs in &mdash; clearance
+shrinks it), purple <b>teeth</b> (a finger/comb joint's tabs &mdash;
+clearance shrinks them, same as a tenon), and pink <b>slot</b> (a
+sliding-fit channel, e.g. a dado a panel slides into &mdash; clearance
+grows it, same direction as a mortice). Tenon also gets chamfered per
+the chamfer setting below, for an easier lead-in (teeth don't). Click
+any shape on the canvas to cycle its classification (which options
+are offered depends on the shape). If a joint wasn't auto-detected
+(it stayed part of a boundary), use "+ Add missed feature" and click
+its two corners directly. Ctrl/Cmd+Z undoes the last change. Click
+empty canvas space or press Escape to clear a selection. Scroll to
+zoom, drag to pan.`;
+
+const helpPopover = document.createElement('div');
+helpPopover.id = 'help-popover';
+document.body.appendChild(helpPopover);
+let activeHelpIcon = null;
+
+function closeHelpPopover() {
+  helpPopover.classList.remove('open');
+  if (activeHelpIcon) activeHelpIcon.classList.remove('active');
+  activeHelpIcon = null;
+}
+
+document.getElementById('candidates-help').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const icon = e.currentTarget;
+  if (activeHelpIcon === icon) { closeHelpPopover(); return; }
+  closeHelpPopover();
+  helpPopover.innerHTML = CANDIDATES_HELP_HTML;
+  helpPopover.classList.add('open');
+  icon.classList.add('active');
+  activeHelpIcon = icon;
+  const iconRect = icon.getBoundingClientRect();
+  const popRect = helpPopover.getBoundingClientRect();
+  let left = iconRect.left;
+  if (left + popRect.width > window.innerWidth - 10) left = window.innerWidth - popRect.width - 10;
+  helpPopover.style.left = Math.max(10, left) + 'px';
+  helpPopover.style.top = (iconRect.bottom + 6) + 'px';
+});
+document.addEventListener('click', closeHelpPopover);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHelpPopover(); });
 
 function screen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));

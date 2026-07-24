@@ -6,33 +6,41 @@ per machine). It explains what each joint type physically is, what each
 setting controls, and — most importantly — the underlying physics that
 makes per-kind settings necessary at all instead of one global kerf number.
 Everything here reflects `kerfcorrector/joints.py`'s current, tested
-behavior as of this writing (70 passing tests, plus verification against a
+behavior as of this writing (123 passing tests, plus verification against a
 real multi-joint test file).
 
-## The two structural kinds (automatic, no settings)
+## The two purely structural kinds (automatic, no settings)
 
-Every cut feature the tool finds gets auto-labeled one of two ways. Neither
-has a settings knob — they're always corrected the same way, by the kerf
-value alone:
+Every cut feature the tool finds gets auto-labeled one of six ways. Two of
+them are unambiguous, purely structural, and never carry a settings knob —
+they're always corrected the same way, by the kerf value alone:
 
 - **Hole** — a fully enclosed, standalone cutout (a closed subpath on its
   own). All 4 of its walls are independently cut, so both its dimensions
   shrink by the *full* kerf value.
-- **Edge** — everything else: a plain wall, a panel's own outer boundary,
-  or any joint feature the user hasn't specifically reclassified. Corrected
+- **Edge** — a plain wall, a panel's own outer boundary, or any joint
+  feature the user has specifically reclassified back to plain. Corrected
   by the standard per-edge kerf shift with no special treatment.
 
-These two are what the tool auto-detects. The four kinds below are never
-auto-detected — a human has to look at the shape and manually reclassify it
-in the review GUI, because "is this a load-bearing joint, and which side of
-it, and what fit does it need" isn't something detectable from geometry
-alone.
+## The four joint kinds (auto-suggested by shape, each with its own settings)
 
-## The four joint kinds (manual classification, each with its own settings)
+These describe the two-sided vocabulary of an interlocking joint. Three of
+the four (tenon, teeth, slot) ARE auto-detected — the tool tells convex
+(bulges outward, solid, adds material) from concave (dents inward, void,
+removes material) using the same winding-derived geometry that already
+drives correction direction, and further tells a lone tab from a repeating
+comb pattern by grouping similarly-sized tabs on the same subpath. Only
+**mortice** is never auto-suggested, since a plain enclosed hole could just
+as easily be decorative as a tenon's socket — there's no equivalent
+repeating-pattern signal to lean on the way there is for teeth. It only
+ever appears as a manual reclassification of an auto-detected hole.
 
-These describe the two-sided vocabulary of an interlocking joint. Which
-options a given feature can be reclassified as depends on its own structure
-— see "Structural forms" below.
+Every auto-detected kind, including hole/edge, is still just a *starting
+suggestion* — the review GUI's cycle buttons let a human override any
+single one, since geometry alone can't know a design's intent as well as
+the person who drew it can. Which options a given feature can be
+reclassified as depends on its own structure — see "Structural forms"
+below.
 
 | Kind | What it is | Solid or void | Structural forms it can take |
 |---|---|---|---|
@@ -176,12 +184,16 @@ clearance value maps to one consistent mm delta everywhere.
   independent ones the way mortice/tenon do (both sides of a slot joint are
   classified `slot` and share `slot_clearance_mm`). There's no equivalent
   "which side do we tune" decision to make for slot.
-- Classification is entirely manual — there is no way to auto-detect which
-  of the four kinds a feature is, only whether it's structurally eligible
-  (see the "Structural forms" table above for what the review GUI will and
-  won't offer for a given shape). Any calibration process that wants to
-  batch-test many joints will need the classifications supplied
-  explicitly (e.g. by element/feature id), not inferred.
+- Tenon/teeth/slot are now auto-detected from geometry (convex windowed
+  excursions default to tenon, get upgraded to teeth when 2+ similarly-sized
+  ones share a subpath; concave windowed excursions default to slot) — but
+  it's still only a starting suggestion, not a guarantee. Mortice remains
+  the one kind with no auto-detection at all (see above). A calibration
+  process driving many joints programmatically should not rely on the
+  auto-suggested kind being correct for every shape — either supply
+  classifications explicitly (e.g. by element/feature id) for a controlled
+  test set, or verify the auto-suggested kind against the drawn intent
+  before using a feature as a calibration data point.
 
 ## Worked example (verified against a real file)
 

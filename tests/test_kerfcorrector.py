@@ -506,6 +506,332 @@ def test_apply_manifest_leaves_unlisted_elements_untouched(tmp_path):
     assert orig_multi_d == new_multi_d
 
 
+# ---------------------------------------------------------------------------
+# mortice / tenon / teeth / slot: extra clearance + tip chamfering
+#
+# All four kinds get the exact same depth-parity-based kerf shift as
+# hole/edge -- `kind` still isn't what decides the sign or magnitude of that
+# part. What's new is a SECOND nudge (extra clearance) layered on top, plus
+# optional corner chamfering, both driven by user-chosen mm values rather
+# than derived from the kerf number -- see apply_manifest's docstring for why
+# an attached feature's own length axis has zero net kerf sensitivity and so
+# needs this manual escape hatch to compensate for a miscalibrated kerf value
+# at all. tenon/teeth are SOLID (clearance shrinks them); mortice/slot are
+# VOIDS (clearance instead ENLARGES them) -- the opposite sign is the whole
+# point of the mortice/slot tests below, since naively reusing the
+# tenon/teeth formula on a void would tighten it instead of loosening it.
+# ---------------------------------------------------------------------------
+
+def test_apply_manifest_tenon_clearance_matches_plain_edge_when_zero(tmp_path):
+    # tenon with clearance=0 must be numerically identical to plain "edge"
+    # (its base kind before this session's classifications existed) -- the
+    # extra term should vanish, not merely become negligible.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    lone = _feature_by_id(elements, features, "lone")
+
+    manifest = joints.to_payload([lone])
+    manifest[0]["kind"] = "tenon"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=1.0, tenon_clearance_mm=0.0, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+    assert not stats.warnings
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    after = next(i for i in infos2 if i.element_index == lone.element_index and i.subpath_index == 0)
+    minx, miny, maxx, maxy = after.poly.bounds
+    scale = doc.scale_user_units_per_mm
+    assert abs((maxx - minx) / scale - 14.0) < 1e-6  # same as plain edge: 13.0 + 1.0
+    assert abs((maxy - miny) / scale - 14.0) < 1e-6
+
+
+def test_apply_manifest_tenon_extra_clearance_shrinks_both_dims_further(tmp_path):
+    # A standalone closed loop has 4 independent walls, so extra clearance
+    # (unlike kerf-only) pulls EVERY wall inward regardless of depth parity --
+    # both dimensions shrink by the full clearance value relative to the
+    # kerf-only (grown) size, same as they're fully kerf-sensitive.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    lone = _feature_by_id(elements, features, "lone")
+
+    manifest = joints.to_payload([lone])
+    manifest[0]["kind"] = "tenon"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=1.0, tenon_clearance_mm=0.4, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    after = next(i for i in infos2 if i.element_index == lone.element_index and i.subpath_index == 0)
+    minx, miny, maxx, maxy = after.poly.bounds
+    scale = doc.scale_user_units_per_mm
+    # kerf-only would give 14.0 (see test above); the extra 0.4mm clearance
+    # shrinks both dims by a further full 0.4mm (2 walls x 0.2mm) SINCE
+    # tenon is solid -- clearance subtracts.
+    assert abs((maxx - minx) / scale - 13.6) < 1e-6  # 13.0 + 1.0 - 0.4
+    assert abs((maxy - miny) / scale - 13.6) < 1e-6
+
+
+def test_apply_manifest_mortice_extra_clearance_enlarges_both_dims(tmp_path):
+    # The mirror of tenon: a mortice is a VOID (the socket a tenon plugs
+    # into), so extra clearance must ENLARGE it relative to the kerf-only
+    # size, not shrink it -- reusing tenon's subtract-clearance formula here
+    # would tighten the socket instead of loosening it, the opposite of what
+    # "give this joint more clearance" means for a hole.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    joint = _feature_by_id(elements, features, "multi", subpath_index=1)
+    assert joint.kind == "hole"
+
+    manifest = joints.to_payload([joint])
+    manifest[0]["kind"] = "mortice"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=1.0, mortice_clearance_mm=0.4, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    after = next(i for i in infos2 if i.element_index == joint.element_index and i.subpath_index == 1)
+    minx, miny, maxx, maxy = after.poly.bounds
+    scale = doc.scale_user_units_per_mm
+    # kerf-only alone gives 11.0 / 2.0 (see test_apply_manifest_hole_both_
+    # dims_shrink_full_kerf). The 0.4mm mortice clearance ENLARGES both dims
+    # by a further full 0.4mm (2 walls x 0.2mm) -- opposite sign from tenon.
+    assert abs((maxx - minx) / scale - 11.4) < 1e-6  # 12.0 - 1.0 + 0.4
+    assert abs((maxy - miny) / scale - 2.4) < 1e-6    # 3.0 - 1.0 + 0.4
+
+
+def test_apply_manifest_teeth_extra_clearance_is_asymmetric(tmp_path):
+    # "stepboundary" is a windowed (attached) feature with only ONE
+    # independent wall on its short axis but TWO independent caps on its
+    # long axis (see test_apply_manifest_step_edge_asymmetric_kerf for the
+    # kerf-only baseline). Extra clearance nudges every member edge inward
+    # by the same half-clearance amount regardless of which axis it's on, so
+    # the single-wall axis loses half the clearance value while the two-cap
+    # axis loses the full clearance value (half from each cap).
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    step = _feature_by_id(elements, features, "stepboundary")
+
+    manifest = joints.to_payload([step])
+    manifest[0]["kind"] = "teeth"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=1.0, teeth_clearance_mm=0.4, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    features2 = joints.find_features(infos2, doc2.scale_user_units_per_mm, max_feature_mm=18.0)
+    after = _feature_by_id(els2, features2, "stepboundary")
+    assert abs(after.short_mm - 3.3) < 1e-6   # 3.0 + 0.5 (kerf) - 0.2 (half clearance, one wall)
+    assert abs(after.long_mm - 10.6) < 1e-6   # 10.0 + 1.0 (kerf) - 0.4 (half clearance x 2 caps)
+
+
+def test_apply_manifest_windowed_slot_extra_clearance_enlarges_asymmetrically(tmp_path):
+    # Regression test for a real bug found against an actual finger-jointed
+    # test file: a WINDOWED void (a notch/slot cut into a bigger boundary,
+    # e.g. "edgenotch" here) does NOT use the same clearance sign as a
+    # standalone/closed-loop void like a mortice hole. A windowed void's
+    # member edges share the surrounding boundary's own winding rather than
+    # having an independently-wound loop of their own, so their outward
+    # normal points INTO the shared cavity -- pushing two opposing notch
+    # walls further into a cavity they both bound moves them TOWARD each
+    # other, not apart. Using the closed-loop sign here would silently
+    # TIGHTEN the notch when the user asked for more clearance -- exactly
+    # backwards. See _extra_clearance_sign's docstring for the full
+    # derivation. The half/full sensitivity split (from
+    # test_apply_manifest_embedded_notch_asymmetric_kerf's kerf-only
+    # baseline) still applies on top of the correct sign.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    notch = _feature_by_id(elements, features, "edgenotch")
+    assert not notch.is_closed_loop
+
+    manifest = joints.to_payload([notch])
+    manifest[0]["kind"] = "slot"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=1.0, slot_clearance_mm=0.4, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    features2 = joints.find_features(infos2, doc2.scale_user_units_per_mm, max_feature_mm=18.0)
+    after = _feature_by_id(els2, features2, "edgenotch")
+    # kerf-only baseline (see test_apply_manifest_embedded_notch_asymmetric_
+    # kerf): short 3.0 -> 2.0 (shrinks a full kerf, both walls independent),
+    # long 10.0 -> 9.5 (shrinks half a kerf, one cap independent). 0.4mm
+    # slot clearance must ENLARGE both relative to that kerf-only shrink --
+    # by the full clearance value on the two-wall axis, half on the one-cap
+    # axis -- not shrink them further.
+    assert abs(after.short_mm - 2.4) < 1e-6   # 2.0 + 0.4 (full clearance, two walls)
+    assert abs(after.long_mm - 9.7) < 1e-6    # 9.5 + 0.2 (half clearance, one cap)
+
+
+def test_apply_manifest_closed_loop_vs_windowed_void_use_opposite_clearance_sign(tmp_path):
+    # The core regression case in one test: the SAME slot_clearance_mm value
+    # must move a closed-loop void (mortice-shaped) and a windowed void
+    # (notch-shaped) in OPPOSITE directions relative to their own kerf-only
+    # baseline -- both "enlarge" in their own frame, but that means opposite
+    # signs in the shared per-edge-outward-normal mechanism. If both moved
+    # the same way, one of them would be tightening instead of loosening.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    closed_hole = _feature_by_id(elements, features, "multi", subpath_index=1)
+    windowed_notch = _feature_by_id(elements, features, "edgenotch")
+    assert closed_hole.is_closed_loop
+    assert not windowed_notch.is_closed_loop
+
+    def corrected_short_mm(feature, elem_id, subpath_index, clearance_mm):
+        doc_ = svgio.load(JOINTS_FIXTURE)
+        elements_ = cli.select_elements(doc_, None, include_fill=False)
+        manifest = joints.to_payload([feature])
+        manifest[0]["kind"] = "slot"
+        stats = joints.apply_manifest(
+            doc_, elements_, manifest, kerf_mm=1.0, slot_clearance_mm=clearance_mm, tolerance_mm=0.02,
+        )
+        assert stats.corrected == 1
+        out_path = str(tmp_path / f"out_{elem_id}_{clearance_mm}.svg")
+        svgio.save(doc_, out_path)
+        doc2 = svgio.load(out_path)
+        els2 = cli.select_elements(doc2, None, include_fill=False)
+        infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+        features2 = joints.find_features(infos2, doc2.scale_user_units_per_mm, max_feature_mm=18.0)
+        after = _feature_by_id(els2, features2, elem_id, subpath_index=subpath_index)
+        return after.short_mm
+
+    hole_kerf_only = corrected_short_mm(closed_hole, "multi", 1, 0.0)
+    hole_with_clearance = corrected_short_mm(closed_hole, "multi", 1, 0.4)
+    notch_kerf_only = corrected_short_mm(windowed_notch, "edgenotch", 0, 0.0)
+    notch_with_clearance = corrected_short_mm(windowed_notch, "edgenotch", 0, 0.4)
+
+    assert hole_with_clearance > hole_kerf_only      # closed-loop void: enlarges
+    assert notch_with_clearance > notch_kerf_only    # windowed void: also enlarges
+
+
+def test_apply_manifest_chamfer_adds_two_points_per_corner(tmp_path):
+    # A standalone closed-loop rectangle has all 4 corners as chamfer
+    # targets (including the tricky wraparound corner where the loop's
+    # Close meets its Move) -- each corner becomes 2 points, so a 4-vertex
+    # rectangle comes out as an 8-vertex octagon.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    lone = _feature_by_id(elements, features, "lone")
+
+    manifest = joints.to_payload([lone])
+    manifest[0]["kind"] = "tenon"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=0.2, chamfer_mm=0.3, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+    assert not stats.warnings
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    after = next(i for i in infos2 if i.element_index == lone.element_index and i.subpath_index == 0)
+    # shapely's exterior.coords repeats the first point as the last, so
+    # 8 unique vertices show up as 9 coordinates.
+    assert len(after.poly.exterior.coords) == 9
+
+
+def test_apply_manifest_chamfer_does_not_apply_to_mortice(tmp_path):
+    # A mortice -- the receiving socket side of a joint -- must come out
+    # untouched by a nonzero chamfer_mm. Chamfering eases a protruding tip
+    # into its socket, so it's only meaningful (and only implemented) for
+    # the solid tenon side.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    joint = _feature_by_id(elements, features, "multi", subpath_index=1)
+    assert joint.kind == "hole"
+
+    manifest = joints.to_payload([joint])
+    manifest[0]["kind"] = "mortice"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=0.2, chamfer_mm=0.3, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    after = next(i for i in infos2 if i.element_index == joint.element_index and i.subpath_index == 1)
+    assert len(after.poly.exterior.coords) == 5  # still a plain 4-vertex rectangle
+
+
+def test_apply_manifest_chamfer_does_not_apply_to_teeth(tmp_path):
+    # Deliberately different from tenon: chamfering is tenon-only. A finger
+    # joint's teeth must come out with sharp (unchamfered) corners even with
+    # chamfer_mm set, since a nonzero chamfer_mm alone shouldn't silently
+    # reshape a kind that isn't supposed to have one.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+    step = _feature_by_id(elements, features, "stepboundary")
+    # Captured before apply_manifest mutates `doc` -- chamfering is the only
+    # thing that changes a polygon's own VERTEX COUNT (plain kerf correction
+    # just moves existing vertices), so comparing counts before vs. after is
+    # a direct chamfer-happened-or-not check.
+    before = next(i for i in infos if i.element_index == step.element_index and i.subpath_index == step.subpath_index)
+    before_count = len(before.poly.exterior.coords)
+
+    manifest = joints.to_payload([step])
+    manifest[0]["kind"] = "teeth"
+    out_path = str(tmp_path / "out.svg")
+    stats = joints.apply_manifest(
+        doc, elements, manifest, kerf_mm=0.2, chamfer_mm=0.3, tolerance_mm=0.02,
+    )
+    svgio.save(doc, out_path)
+    assert stats.corrected == 1
+
+    doc2 = svgio.load(out_path)
+    els2 = cli.select_elements(doc2, None, include_fill=False)
+    infos2 = joints.analyze(doc2, els2, tolerance_mm=0.02)
+    after = next(i for i in infos2 if i.element_index == step.element_index and i.subpath_index == step.subpath_index)
+    assert len(after.poly.exterior.coords) == before_count
+
+
 def test_apply_manifest_unknown_kind_is_skipped():
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)

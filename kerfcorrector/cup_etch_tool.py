@@ -123,6 +123,20 @@ PAGE = """<!doctype html>
       linear-gradient(45deg, transparent 75%, #333 75%), linear-gradient(-45deg, transparent 75%, #333 75%);
     background-size: 14px 14px; background-position: 0 0, 0 7px, 7px -7px, -7px 0; background-color: #444;
     border: 1px solid #444; border-radius: 4px; }
+  .help-icon { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;
+    border-radius: 50%; background: #3c3c3c; color: #9c9c9c; font-size: 10px; font-weight: 700;
+    cursor: pointer; margin-left: 5px; vertical-align: middle; user-select: none; line-height: 1; }
+  .help-icon:hover, .help-icon.active { background: #3c6e96; color: #fff; }
+  #help-popover { display: none; position: fixed; max-width: 260px; background: #2f2f2f; border: 1px solid #555;
+    border-radius: 6px; padding: 10px 12px; font-size: 12px; color: #ccc; line-height: 1.45; z-index: 200;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.6); }
+  #help-popover.open { display: block; }
+  .unit-toggle { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .unit-toggle-label { font-size: 11px; color: #888; margin-right: 2px; }
+  .unit-btn { background: #2a2a2a; border: 1px solid #444; color: #aaa; padding: 4px 12px; border-radius: 4px;
+    font-size: 12px; cursor: pointer; }
+  .unit-btn.active { background: #3c6e96; border-color: #3c6e96; color: #fff; }
+  .unit-btn:hover:not(.active) { background: #333; }
 </style>
 </head>
 <body>
@@ -152,50 +166,36 @@ PAGE = """<!doctype html>
 
 <div id="body" style="display:none">
   <div id="panel">
-    <label>Bottom circumference <span class="unit">(mm)</span></label>
+    <div class="unit-toggle">
+      <span class="unit-toggle-label">Units</span>
+      <button type="button" class="unit-btn active" data-unit="mm">mm</button>
+      <button type="button" class="unit-btn" data-unit="in">in</button>
+    </div>
+
+    <label>Bottom circumference <span class="unit length-unit">(mm)</span><span class="help-icon" data-help="Wrap a tape measure around the rim at the bottom and top of the design area -- doesn't have to be the whole cup, just the band being etched.">?</span></label>
     <input type="number" id="p-bottom-circ" value="207" step="1" min="1">
-    <label>Top circumference <span class="unit">(mm)</span></label>
+    <label>Top circumference <span class="unit length-unit">(mm)</span><span class="help-icon" data-help="Wrap a tape measure around the rim at the bottom and top of the design area -- doesn't have to be the whole cup, just the band being etched.">?</span></label>
     <input type="number" id="p-top-circ" value="285" step="1" min="1">
-    <div class="sub">Wrap a tape measure around the rim at the bottom and
-    top of the design area -- doesn't have to be the whole cup, just the
-    band being etched.</div>
 
-    <label>Side length <span class="unit">(mm)</span></label>
+    <label>Side length <span class="unit length-unit">(mm)</span><span class="help-icon" data-help="Lay the tape flat along the tapered side, from the bottom rim straight up to the top rim -- not the vertical height, which isn't directly measurable without already knowing the taper.">?</span></label>
     <input type="number" id="p-side" value="148" step="1" min="1">
-    <div class="sub">Lay the tape flat along the tapered side, from the
-    bottom rim straight up to the top rim -- not the vertical height, which
-    isn't directly measurable without already knowing the taper.</div>
 
-    <label>Distance from top <span class="unit">(mm)</span></label>
+    <label>Distance from top <span class="unit length-unit">(mm)</span><span class="help-icon" data-help="Same kind of measurement as side length -- lay the tape flat along the side, from the top rim down to where the design should start. Matters because the diameter at the design's own position (not just the cup's overall taper) is what the projection below is corrected against.">?</span></label>
     <input type="number" id="p-offset" value="0" step="1" min="0">
-    <div class="sub">Same kind of measurement as side length -- lay the
-    tape flat along the side, from the top rim down to where the design
-    should start. Matters because the diameter at the design's own
-    position (not just the cup's overall taper) is what the projection
-    below is corrected against.</div>
 
-    <label>Design width <span class="unit">(mm)</span></label>
+    <label>Design width <span class="unit length-unit">(mm)</span><span class="help-icon" data-help="How wide the finished etching should look, viewed head-on. The uploaded image is scaled to this width, keeping its own proportions (never cropped or stretched) -- its height is whatever that scaling works out to, not entered separately.">?</span></label>
     <input type="number" id="p-width" value="60" step="1" min="1">
-    <div class="sub">How wide the finished etching should look, viewed
-    head-on. The uploaded image is scaled to this width, keeping its own
-    proportions (never cropped or stretched) -- its height is whatever that
-    scaling works out to, not entered separately.</div>
 
     <div id="computed-geom" class="sub"></div>
 
-    <label>Resolution <span class="unit">(DPI)</span></label>
+    <label>Resolution <span class="unit">(DPI)</span><span class="help-icon" data-help="150 DPI is a reasonable default. Higher looks sharper but dithering (below) gets slower on big images. Always measured in DPI regardless of the units toggle above -- DPI is already inch-based by definition.">?</span></label>
     <input type="number" id="p-dpi" value="150" step="10" min="10" max="1200">
-    <div class="sub">150 DPI is a reasonable default. Higher looks sharper
-    but dithering (below) gets slower on big images.</div>
 
     <div class="check">
       <input type="checkbox" id="p-dither" checked>
       <label for="p-dither" style="margin:0">Dither for photo engraving</label>
+      <span class="help-icon" data-help="Error-diffusion dither to pure black/white, so a continuous-tone photo still shows shading once etched (a laser can only mark or not mark a spot). Leave off for a logo or line art that's already high-contrast.">?</span>
     </div>
-    <div class="sub">Error-diffusion dither to pure black/white, so a
-    continuous-tone photo still shows shading once etched (a laser can
-    only mark or not mark a spot). Leave off for a logo or line art that's
-    already high-contrast.</div>
 
     <div class="actions">
       <button class="btn" id="generate">Generate pattern</button>
@@ -247,6 +247,79 @@ dropZone.addEventListener('drop', (e) => {
   if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
 });
 
+// ---------------- help popovers ----------------
+// One shared popover element (rather than one per icon) positioned next to
+// whichever "?" was clicked -- simpler than managing per-field tooltip
+// elements, and works the same for every field without repeating markup.
+const helpPopover = document.createElement('div');
+helpPopover.id = 'help-popover';
+document.body.appendChild(helpPopover);
+let activeHelpIcon = null;
+
+function closeHelpPopover() {
+  helpPopover.classList.remove('open');
+  if (activeHelpIcon) activeHelpIcon.classList.remove('active');
+  activeHelpIcon = null;
+}
+
+document.querySelectorAll('.help-icon').forEach(icon => {
+  icon.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (activeHelpIcon === icon) { closeHelpPopover(); return; }
+    closeHelpPopover();
+    helpPopover.textContent = icon.dataset.help;
+    helpPopover.classList.add('open');
+    icon.classList.add('active');
+    activeHelpIcon = icon;
+    const iconRect = icon.getBoundingClientRect();
+    const popRect = helpPopover.getBoundingClientRect();
+    let left = iconRect.left;
+    if (left + popRect.width > window.innerWidth - 10) left = window.innerWidth - popRect.width - 10;
+    helpPopover.style.left = Math.max(10, left) + 'px';
+    helpPopover.style.top = (iconRect.bottom + 6) + 'px';
+  });
+});
+document.addEventListener('click', closeHelpPopover);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHelpPopover(); });
+
+// ---------------- mm / inch unit toggle ----------------
+// The backend API and all internal math always work in mm (see
+// cup_etch.py) -- this only affects what's displayed and typed. Every
+// length field is converted (not just relabeled) when the unit changes,
+// so the physical size represented stays the same either way.
+let currentUnit = 'mm';
+const MM_PER_INCH = 25.4;
+const LENGTH_FIELD_IDS = ['p-bottom-circ', 'p-top-circ', 'p-side', 'p-offset', 'p-width'];
+
+function toMm(value) { return currentUnit === 'in' ? value * MM_PER_INCH : value; }
+function fromMm(mm) { return currentUnit === 'in' ? mm / MM_PER_INCH : mm; }
+function fmtLen(mm) { return fromMm(mm).toFixed(currentUnit === 'in' ? 3 : 1); }
+function roundTo(v, decimals) { const f = Math.pow(10, decimals); return Math.round(v * f) / f; }
+
+document.querySelectorAll('.unit-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const newUnit = btn.dataset.unit;
+    if (newUnit === currentUnit) return;
+    LENGTH_FIELD_IDS.forEach(id => {
+      const el = document.getElementById(id);
+      const val = parseFloat(el.value);
+      if (Number.isFinite(val)) {
+        const mm = currentUnit === 'in' ? val * MM_PER_INCH : val;
+        const converted = newUnit === 'in' ? mm / MM_PER_INCH : mm;
+        el.value = roundTo(converted, newUnit === 'in' ? 3 : 1);
+      }
+      el.step = newUnit === 'in' ? '0.05' : '1';
+    });
+    document.getElementById('p-offset').min = '0';  // offset can always be zero, regardless of unit
+    ['p-bottom-circ', 'p-top-circ', 'p-side', 'p-width'].forEach(id =>
+      document.getElementById(id).min = newUnit === 'in' ? '0.05' : '1');
+    currentUnit = newUnit;
+    document.querySelectorAll('.unit-btn').forEach(b => b.classList.toggle('active', b.dataset.unit === currentUnit));
+    document.querySelectorAll('.length-unit').forEach(el => { el.textContent = `(${currentUnit})`; });
+    computeGeometryPreview();
+  });
+});
+
 async function uploadFile(file) {
   const status = document.getElementById('upload-status');
   status.className = '';
@@ -295,11 +368,15 @@ document.getElementById('change-file').addEventListener('click', () => {
 // through the real Python geometry code, which is the authority (including
 // its own validation) on whether these numbers work.
 function computeGeometryPreview() {
-  const bottomCirc = parseFloat(document.getElementById('p-bottom-circ').value);
-  const topCirc = parseFloat(document.getElementById('p-top-circ').value);
-  const side = parseFloat(document.getElementById('p-side').value);
-  const offset = parseFloat(document.getElementById('p-offset').value);
-  const width = parseFloat(document.getElementById('p-width').value);
+  // Every input is read in whatever unit is currently selected and
+  // immediately converted to mm -- all the geometry math below (and the
+  // real Python code it mirrors) works in mm throughout; only the display
+  // at the end converts back to the selected unit.
+  const bottomCirc = toMm(parseFloat(document.getElementById('p-bottom-circ').value));
+  const topCirc = toMm(parseFloat(document.getElementById('p-top-circ').value));
+  const side = toMm(parseFloat(document.getElementById('p-side').value));
+  const offset = toMm(parseFloat(document.getElementById('p-offset').value));
+  const width = toMm(parseFloat(document.getElementById('p-width').value));
   const out = document.getElementById('computed-geom');
 
   if (![bottomCirc, topCirc, side, width].every(v => Number.isFinite(v) && v > 0) ||
@@ -317,14 +394,14 @@ function computeGeometryPreview() {
   const discriminant = side * side - deltaR * deltaR;
   if (discriminant <= 0) {
     out.innerHTML = `<span class="err">Side length is too short for this much taper -- ` +
-      `it must be more than ${Math.abs(deltaR).toFixed(1)}mm.</span>`;
+      `it must be more than ${fmtLen(Math.abs(deltaR))} ${currentUnit}.</span>`;
     return;
   }
   const availableHeight = Math.sqrt(discriminant);
   const axialOffset = offset * (availableHeight / side);
 
   if (!uploadedImgW || !uploadedImgH) {
-    out.innerHTML = `Available height along the side: <b>${availableHeight.toFixed(1)}mm</b><br>` +
+    out.innerHTML = `Available height along the side: <b>${fmtLen(availableHeight)} ${currentUnit}</b><br>` +
       `(design height, local diameter, and front coverage need the uploaded image's own ` +
       `proportions -- shown once it's loaded)`;
     return;
@@ -334,8 +411,8 @@ function computeGeometryPreview() {
   if (axialOffset + designHeight > availableHeight) {
     const remaining = availableHeight - axialOffset;
     out.innerHTML = `<span class="err">At this width, the image would be ` +
-      `${designHeight.toFixed(1)}mm tall -- more than the ${remaining.toFixed(1)}mm remaining ` +
-      `below the offset on this ${availableHeight.toFixed(1)}mm-tall side.</span>`;
+      `${fmtLen(designHeight)} ${currentUnit} tall -- more than the ${fmtLen(remaining)} ${currentUnit} remaining ` +
+      `below the offset on this ${fmtLen(availableHeight)} ${currentUnit}-tall side.</span>`;
     return;
   }
   const topD = 2 * topR, bottomD = 2 * bottomR;
@@ -354,20 +431,20 @@ function computeGeometryPreview() {
   const maxSin = Math.sin(87.5 * Math.PI / 180);
   if (sinNeeded >= maxSin) {
     out.innerHTML = `<span class="err">This design's narrowest point (diameter ` +
-      `${narrowestDiameter.toFixed(1)}mm) can't show the full ${width.toFixed(1)}mm design width ` +
-      `without its edges needing near-infinite stretching there -- try a narrower design width, a ` +
+      `${fmtLen(narrowestDiameter)} ${currentUnit}) can't show the full ${fmtLen(width)} ${currentUnit} design ` +
+      `width without its edges needing near-infinite stretching there -- try a narrower design width, a ` +
       `shorter design, or a different position.</span>`;
     return;
   }
   const phiMaxCanvas = Math.asin(sinNeeded);
   const wrapAngle = 2 * phiMaxCanvas * 180 / Math.PI;
   const arcLength = phiMaxCanvas * localDiameter;  // always > width -- see cup_etch.py's arc_length_mm
-  out.innerHTML = `Design height: <b>${designHeight.toFixed(1)}mm</b> ` +
-    `(available: ${availableHeight.toFixed(1)}mm)<br>` +
-    `Diameter at design's position (rotary calibration): <b>${localDiameter.toFixed(1)}mm</b><br>` +
+  out.innerHTML = `Design height: <b>${fmtLen(designHeight)} ${currentUnit}</b> ` +
+    `(available: ${fmtLen(availableHeight)} ${currentUnit})<br>` +
+    `Diameter at design's position (rotary calibration): <b>${fmtLen(localDiameter)} ${currentUnit}</b><br>` +
     `Front coverage: <b>${wrapAngle.toFixed(0)}&deg;</b><br>` +
-    `Pattern's true physical width (enter this in your rotary job): <b>${arcLength.toFixed(1)}mm</b> ` +
-    `(looks ${width.toFixed(1)}mm wide viewed head-on, but the etched pattern itself is wider)`;
+    `Pattern's true physical width (enter this in your rotary job): <b>${fmtLen(arcLength)} ${currentUnit}</b> ` +
+    `(looks ${fmtLen(width)} ${currentUnit} wide viewed head-on, but the etched pattern itself is wider)`;
 }
 ['p-bottom-circ', 'p-top-circ', 'p-side', 'p-offset', 'p-width'].forEach(id =>
   document.getElementById(id).addEventListener('input', computeGeometryPreview));
@@ -380,11 +457,11 @@ document.getElementById('generate').addEventListener('click', async () => {
   info.innerHTML = 'Generating...';
   const body = {
     token: uploadToken,
-    bottom_circumference_mm: parseFloat(document.getElementById('p-bottom-circ').value),
-    top_circumference_mm: parseFloat(document.getElementById('p-top-circ').value),
-    side_length_mm: parseFloat(document.getElementById('p-side').value),
-    top_offset_mm: parseFloat(document.getElementById('p-offset').value),
-    design_width_mm: parseFloat(document.getElementById('p-width').value),
+    bottom_circumference_mm: toMm(parseFloat(document.getElementById('p-bottom-circ').value)),
+    top_circumference_mm: toMm(parseFloat(document.getElementById('p-top-circ').value)),
+    side_length_mm: toMm(parseFloat(document.getElementById('p-side').value)),
+    top_offset_mm: toMm(parseFloat(document.getElementById('p-offset').value)),
+    design_width_mm: toMm(parseFloat(document.getElementById('p-width').value)),
     dpi: parseFloat(document.getElementById('p-dpi').value),
     dither: document.getElementById('p-dither').checked,
   };
@@ -410,15 +487,15 @@ document.getElementById('generate').addEventListener('click', async () => {
 
   info.innerHTML =
     `Output: <b>${data.output_w}&times;${data.output_h}px</b> -- ` +
-    `<b>${data.output_width_mm.toFixed(1)}mm &times; ${data.output_height_mm.toFixed(1)}mm</b>, ` +
+    `<b>${fmtLen(data.output_width_mm)} ${currentUnit} &times; ${fmtLen(data.output_height_mm)} ${currentUnit}</b>, ` +
     `${data.wrap_angle_deg.toFixed(0)}&deg; front coverage<br>` +
     `This is the pattern's own true physical size (wider than it looks from ` +
     `the front, since peeling any design off a curved surface always yields ` +
     `more material than its straight-line width) -- looks ` +
-    `<b>${data.apparent_width_mm.toFixed(1)}mm</b> wide viewed head-on, but ` +
-    `<b>enter ${data.output_width_mm.toFixed(1)}mm as the image width in your rotary job</b> ` +
+    `<b>${fmtLen(data.apparent_width_mm)} ${currentUnit}</b> wide viewed head-on, but ` +
+    `<b>enter ${fmtLen(data.output_width_mm)} ${currentUnit} as the image width in your rotary job</b> ` +
     `-- a rotary converts image width to a rotation angle via that true physical size, not the apparent one.<br>` +
-    `Set your rotary attachment's object/roller diameter to <b>${data.local_diameter_mm.toFixed(1)}mm</b> ` +
+    `Set your rotary attachment's object/roller diameter to <b>${fmtLen(data.local_diameter_mm)} ${currentUnit}</b> ` +
     `to match this pattern (the diameter at this design's own vertical position).`;
   const link = document.createElement('a');
   link.className = 'download';

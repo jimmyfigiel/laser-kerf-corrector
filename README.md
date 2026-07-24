@@ -26,6 +26,73 @@ This is the same Flask app whether run locally or deployed (see
 "Deploying" below) — nothing about it depends on running on your own
 machine.
 
+### Fine-tuning joint fit: mortice/tenon/teeth/slot, extra clearance, and chamfering
+
+Kerf correction alone gets every *independently-cut* wall of a feature back
+to its drawn size — but a feature attached to a bigger boundary (a
+finger-joint tooth, or a tab headed into a hole) has one end that's shared
+with that boundary rather than independently cut, and that shared end has
+*zero* net sensitivity to the kerf value at all (its own boundary-side shift
+and its tip's shift cancel out on that axis — see the `apply_manifest`
+docstring in `joints.py` for the full derivation). So if your kerf number is
+even slightly off, that error shows up entirely as extra (or missing)
+length on that axis, with nothing on the feature's own geometry to
+compensate — a standalone hole doesn't have this problem, since all four of
+its walls are independently cut. This is why "just re-measure your kerf
+more carefully" only gets you so far, and why different joint constructs
+can each need a slightly different fudge on top of the same kerf number.
+
+The review GUI's classification cycle offers four extra kinds beyond plain
+`hole`/`edge`, covering the two-sided vocabulary of an interlocking joint:
+
+- **Mortice** — the socket a tenon plugs into. A void, always a fully
+  enclosed cutout (same structural shape as a plain `hole`).
+- **Tenon** — the tab that plugs into a mortice. Solid; can be a
+  free-standing tab or one attached to a bigger boundary.
+- **Teeth** — a finger/comb joint's individual tabs. Solid, always attached
+  to a boundary (a finger joint is by definition not free-standing).
+- **Slot** — a sliding-fit channel, e.g. a dado a panel slides into. A void;
+  can be either its own enclosed cutout or a channel open at a boundary's
+  edge.
+
+Which options a given feature offers depends on its own structure (a
+container can never be any of these four; a standalone closed loop can be
+`hole`, `mortice`, `tenon`, or `slot`, but never `teeth`; an attached
+feature can be `tenon`, `teeth`, or `slot`, but never the whole-subpath
+`hole`/`mortice` kind). Marking a feature with any of the four unlocks its
+own independent, manually-set clearance (not derived from the kerf number,
+since the right amount depends on the joint's own fit, not just the
+machine) — a lone tenon, a repeating finger tooth, a mortice socket, and a
+sliding slot usually all want different amounts, which is exactly why each
+gets its own number rather than sharing one:
+
+- **Extra clearance (mm)**, one setting per kind. For the two SOLID kinds
+  (tenon, teeth) it pulls the feature's own edges further toward the
+  material's interior than pure kerf correction alone would, for an easier
+  press-fit — less material, same idea as sanding a tenon down slightly. For
+  the two VOID kinds (mortice, slot) it does the opposite: it enlarges the
+  opening beyond pure kerf correction, for an easier fit around a
+  fixed-size mate — more material removed, same idea as widening a mortice
+  slightly with a chisel. Reusing one formula for both would be wrong: a
+  hole that gets *tighter* when you ask for *more* clearance is backwards.
+- **Chamfer (mm)** — clips a small lead-in bevel off each tip corner of a
+  tenon or tooth (the ones not shared with the surrounding boundary), so it
+  starts narrower and eases into its socket rather than needing to be
+  exactly aligned before any of it can enter. Only applies to the
+  protruding tenon/teeth side — not currently available for mortice/slot,
+  the receiving side.
+
+All of these apply on top of the normal kerf correction and only to
+features you've explicitly marked as one of the four kinds — plain `hole`
+and `edge` are unaffected regardless of what these are set to.
+
+The six apply-panel numbers (kerf, four clearances, chamfer) can be saved
+to a small JSON file (**Save settings**) and reloaded later (**Load
+settings**) — useful for keeping one file per material (e.g. "3mm birch
+ply.json") and reusing it across jobs instead of re-entering the same
+numbers every time. It's a plain downloadable file, not browser storage, so
+it travels with you across machines/browsers.
+
 The section below describes the same correction workflow as standalone
 command-line scripts (`review_joints.py` + `apply_joints.py`) that operate
 on local files directly, useful for automation/scripting, batch
@@ -388,10 +455,17 @@ this ever gets linked somewhere with real volume.
 - The review GUI needs a browser; there's no headless/scripted way to author
   a manifest other than hand-writing the JSON (see the format written by
   `review_joints.py` — a list of `{element_index, subpath_index, kind,
-  member_edges}` objects, where `kind` is `"hole"` or `"edge"` and
-  `member_edges` are the vertex indices of that feature's own edges). An
-  unrecognized `kind` or an empty `member_edges` is skipped with a warning
-  rather than guessed.
+  member_edges}` objects, where `kind` is `"hole"`, `"edge"`, `"mortice"`,
+  `"tenon"`, `"teeth"`, or `"slot"`, and `member_edges` are the vertex
+  indices of that feature's own edges). An unrecognized `kind` or an empty
+  `member_edges` is skipped with a warning rather than guessed.
+- mortice/tenon/teeth/slot extra clearance and chamfering (see "Fine-tuning
+  joint fit" above) are currently exposed only through the web review GUI
+  (`kerf_tool.py`)'s apply panel, not through `apply_joints.py`'s CLI flags
+  or the local `review_app.py` mirror — `joints.apply_manifest`'s
+  `mortice_clearance_mm`/`tenon_clearance_mm`/`teeth_clearance_mm`/
+  `slot_clearance_mm`/`chamfer_mm` parameters are there for direct/scripted
+  use in the meantime.
 
 ## Tapered Cup Etching Pattern
 
@@ -494,6 +568,16 @@ Floyd-Steinberg error diffusion down to pure black/white, which is what
 makes a continuous-tone photo still show shading once etched (a laser can
 only mark or not mark a given spot) -- leave it off for a logo or line art
 that's already high-contrast.
+
+A **mm / in** toggle above the geometry fields converts every length field
+in place (not just the label) when switched, so 8in and 203mm read as the
+same physical size either way -- the backend and all the math underneath
+still work in mm throughout; only what's typed and displayed changes.
+Resolution stays in DPI regardless, since DPI is already inch-based by
+definition. Each field's inline explanation (what used to sit permanently
+underneath it) is now a "?" icon next to its label -- click it for a
+popover with that field's explanation, click elsewhere or press Escape to
+dismiss it.
 
 The uploaded image itself is never cropped or stretched: it's scaled to
 the design width while keeping its own proportions, and the design's

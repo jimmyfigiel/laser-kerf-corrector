@@ -17,8 +17,8 @@ TOOLS = [
     },
     {
         "name": "Kerf Finder",
-        "description": "Cut three small test pieces to work out your kerf and tab-fit clearances, "
-                        "and download a settings profile for the Kerf Corrector above.",
+        "description": "Cut four small test pieces -- a kerf square, a mortice/tenon, a finger-joint, "
+                        "and a slot ladder -- and download a settings profile for the Kerf Corrector above.",
         "url": kerf_finder_tool.bp.url_prefix + "/",
     },
     {

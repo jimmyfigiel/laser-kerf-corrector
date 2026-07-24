@@ -164,46 +164,52 @@ Step 1 — auto-detect candidates and review them in a browser:
 venv\Scripts\python review_joints.py "plan.svg"
 ```
 
-This looks at every closed cut loop and runs three detection passes, then
-labels the result **hole** or **edge** for review:
+This looks at every closed cut loop and runs three detection passes:
 
 - **Whole small subpath**: a closed subpath whose own true size (its
   fitted rectangle's long side — not the axis-aligned bounding box, which
   overstates a rotated shape's size by up to sqrt(2)) is under 20mm is one
   whole feature — a **hole** (orange, material removed) if its nesting
-  depth is odd, an **edge** (blue, solid) if even, e.g. a free-standing
-  key/tab shape not attached to anything else in the file.
+  depth is odd, otherwise a **tenon** (a free-standing solid tab, not
+  attached to anything else in the file — never **teeth**, since a
+  repeating comb pattern can't be its own separate closed subpath).
 - **Windowed excursion**: for a bigger boundary (like a panel's outer
   silhouette), a short run of edges that locally bulges outward or dents
   inward — bounded on both sides by edges that are themselves parallel to
-  each other — is an **edge** feature embedded in that boundary, whether it
-  bulges out (a tab, adds material) or dents in (a notch, removes
-  material). This finds a feature however it's constructed: two long
-  parallel walls joined by a perpendicular cap (common in CorelDraw-style
-  exports), or a simple orthogonal step (common in Inkscape-style exports)
-  — both are just "a short window bounded by parallel edges" as far as the
-  search cares.
+  each other — is a feature embedded in that boundary. Which way it goes
+  decides the kind: bulges outward (convex, adds material) → a **tenon**
+  candidate; if 2+ similarly-sized ones turn up on the very same subpath,
+  all of them get upgraded to **teeth** instead, since a repeating pattern
+  is a finger joint, not a pile of unrelated single tabs. Dents inward
+  (concave, removes material) → **slot**. This finds a feature however
+  it's constructed: two long parallel walls joined by a perpendicular cap
+  (common in CorelDraw-style exports), or a simple orthogonal step (common
+  in Inkscape-style exports) — both are just "a short window bounded by
+  parallel edges" as far as the search cares.
 - **Leftover container**: whatever's left of a big boundary once its
   windowed features are carved out — the plain, joint-free walls of a
   panel's outer silhouette, or of a big hole. Left uncorrected, these
   edges would leave the finished part undersized (or a big hole oversized)
   by the kerf even with every joint on it corrected perfectly, since
   "correct each joint" and "correct the part's own overall size" are
-  separate concerns. It's also labeled **edge**, auto-detected and
+  separate concerns. It's always labeled **edge**, auto-detected and
   selected by default — a plain rectangular panel with no joints at all
   still comes back as one container feature, so it still gets corrected.
 
-Only the first pass can produce a **hole** — everything else, including
-the tab/notch distinction and the leftover container, is folded into the
-single **edge** label, since all of it gets the identical kerf/2-per-edge
-offset regardless of the exact shape. Hole is worth a careful look in
-review because a missed or misplaced one is visibly wrong; the rest isn't,
-so there's nothing to gain from splitting it further.
+Every one of these is a *starting suggestion*, not a final answer — the
+review GUI's cycle buttons (see below) let you override any single one,
+since geometry alone can't know a design's intent as well as the person
+who drew it can. Two are worth a particularly careful look: a missed or
+misplaced **hole** is visibly wrong, and **mortice** is never
+auto-detected at all (an enclosed hole could just as easily be
+decorative), so it only ever appears as a manual reclassification of an
+auto-detected hole.
 
 A browser window opens showing the sheet with the detected features
 overlaid and color-coded (scroll to zoom, drag to pan). The sidebar lists
 every feature with its detected size and a button to cycle its
-classification through `ignored` / `hole` / `edge`. Click any shape
+classification (which options are offered depends on the shape's own
+structure — see "Fine-tuning joint fit" above). Click any shape
 directly on the canvas to cycle it the same way, including ones never
 auto-suggested — clicking always hits the smallest feature under the
 pointer, so a small notch nested inside a big container polygon stays
@@ -465,7 +471,14 @@ this ever gets linked somewhere with real volume.
   or the local `review_app.py` mirror — `joints.apply_manifest`'s
   `mortice_clearance_mm`/`tenon_clearance_mm`/`teeth_clearance_mm`/
   `slot_clearance_mm`/`chamfer_mm` parameters are there for direct/scripted
-  use in the meantime.
+  use in the meantime. `review_app.py`'s own cycle button and shape
+  styling also predate this classification set (still just
+  `ignored`/`hole`/`edge`), so a feature `joints.find_features` now
+  auto-detects as tenon/teeth/slot shows up there unstyled and cycles
+  straight to `ignored` on first click rather than stepping through the
+  full set — the underlying data is still correct (and `kerf_tool.py`
+  handles it properly), only that specific local mirror's UI hasn't
+  caught up.
 
 ## Tapered Cup Etching Pattern
 

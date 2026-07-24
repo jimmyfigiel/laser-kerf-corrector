@@ -87,7 +87,7 @@ def test_selection_excludes_filled_shapes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Selective joint correction (joints.py): HOLE / EDGE detection
+# Selective joint correction (joints.py): HOLE/EDGE/TENON/TEETH/SLOT detection
 #
 # The guiding principle: every corrected feature ends up at exactly its own
 # drawn size after cutting. This falls out of one uniform rule -- every
@@ -95,13 +95,13 @@ def test_selection_excludes_filled_shapes(tmp_path):
 # sign from the feature's own nesting depth parity -- so a dimension's
 # magnitude of change (half vs. full kerf) is just a consequence of how
 # many of its own boundary walls are actual member edges of the feature,
-# not something hand-coded per kind. `kind` itself is purely a review-GUI
-# label (HOLE for a standalone removed-material subpath, worth a careful
-# look; EDGE for everything else, since a tab/notch/plain-wall misclassified
-# as each other is geometrically harmless) -- `is_container` is the one
-# piece of detection metadata that still matters functionally, marking the
-# single leftover-boundary entry each subpath gets so the GUI's fold-back
-# logic can find it.
+# not something hand-coded per kind. Unlike an earlier version of this
+# tool, `kind` is NOT purely cosmetic anymore -- mortice/tenon/teeth/slot
+# each carry their own independent extra clearance (see the tests further
+# below), so getting a windowed excursion's convex-vs-concave read right
+# matters now. `is_container` is still the one piece of detection metadata
+# that matters regardless of kind, marking the single leftover-boundary
+# entry each subpath gets so the GUI's fold-back logic can find it.
 # ---------------------------------------------------------------------------
 
 def _feature_by_id(elements, features, elem_id, subpath_index=0, kind=None):
@@ -127,26 +127,32 @@ def test_find_features_whole_subpath_hole_and_edge():
     assert abs(joint.long_mm - 12.0) < 1e-6
 
     lone = _feature_by_id(elements, features, "lone")
-    assert lone.kind == "edge"  # standalone, not nested -> even depth (solid tab)
+    # standalone, not nested -> even depth (solid) -> auto-detected TENON,
+    # never TEETH: a repeating comb pattern can't be its own separate
+    # closed subpath (see _group_teeth).
+    assert lone.kind == "tenon"
     assert lone.is_closed_loop  # whole subpath -> genuinely closed loop, not a window
     assert abs(lone.short_mm - 13.0) < 1e-6
     assert abs(lone.long_mm - 13.0) < 1e-6
 
     standalone_tab = _feature_by_id(elements, features, "tab")
-    assert standalone_tab.kind == "edge"
+    assert standalone_tab.kind == "tenon"
     assert standalone_tab.is_closed_loop
     assert abs(standalone_tab.short_mm - 3.0) < 1e-6
     assert abs(standalone_tab.long_mm - 12.0) < 1e-6
 
 
-def test_find_features_embedded_notch_is_edge():
+def test_find_features_embedded_notch_is_slot():
+    # "edgenotch"'s excursion dips INTO the panel (concave -- see the raw
+    # path: it steps from y=600 to y=700, i.e. further into the rectangle's
+    # own body, removing material) -- auto-detected SLOT.
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)
     infos = joints.analyze(doc, elements, tolerance_mm=0.02)
     features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
 
     notch = _feature_by_id(elements, features, "edgenotch")
-    assert notch.kind == "edge"
+    assert notch.kind == "slot"
     assert not notch.is_container
     # An open run along the boundary, not a closed loop -- there's no real
     # edge closing its last point back to its first (see kerf_tool.py's
@@ -160,12 +166,13 @@ def test_find_features_embedded_notch_is_edge():
 
 
 def test_find_features_container_covers_leftover_edges():
-    # The notch's own 3 edges are claimed by the EDGE feature above; every
+    # The notch's own 3 edges are claimed by the SLOT feature above; every
     # other edge of "edgenotch"'s outer silhouette belongs to no detected
     # joint at all, but still needs the standard kerf offset or the panel
     # comes out undersized -- that's exactly what the CONTAINER feature is
-    # for. Both entries share kind "edge" (only `is_container` tells them
-    # apart), since which one is which makes no difference to correction.
+    # for. The container itself is always plain EDGE regardless of what its
+    # sibling joint auto-detected as -- a panel's own leftover boundary
+    # walls are never a joint in their own right.
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)
     infos = joints.analyze(doc, elements, tolerance_mm=0.02)
@@ -174,7 +181,7 @@ def test_find_features_container_covers_leftover_edges():
     idx = next(i for i, e in enumerate(elements) if e.get("id") == "edgenotch")
     on_this_subpath = [f for f in features if f.element_index == idx and f.subpath_index == 0]
     assert len(on_this_subpath) == 2  # the notch, plus the leftover container
-    assert {f.kind for f in on_this_subpath} == {"edge"}
+    assert {f.kind for f in on_this_subpath} == {"slot", "edge"}
     assert sorted(f.is_container for f in on_this_subpath) == [False, True]
 
     notch = next(f for f in on_this_subpath if not f.is_container)
@@ -230,24 +237,65 @@ def test_find_features_rotated_shape_uses_fitted_size_not_axis_aligned_bbox():
     assert len(diamond.member_edges) == 4  # whole subpath, not a windowed/boundary fragment
 
 
-def test_find_features_step_style_edge():
+def test_find_features_step_style_tenon():
     # Regression test for the construction style the original edge-pair
     # detector could not find at all: one wall simply interrupted, stepping
     # out then back in, rather than two full-length parallel walls joined by
     # a perpendicular cap. The edge immediately before and after the window
     # are parallel to each other, which is what the windowed search keys on.
+    # The step here pushes OUTWARD (x: 800 -> 830, away from the panel's own
+    # x=600-800 body, adding material) -- convex -- auto-detected TENON, and
+    # a lone one at that (nothing else on this subpath to group it with into
+    # TEETH).
     doc = svgio.load(JOINTS_FIXTURE)
     elements = cli.select_elements(doc, None, include_fill=False)
     infos = joints.analyze(doc, elements, tolerance_mm=0.02)
     features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
 
     step = _feature_by_id(elements, features, "stepboundary")
-    assert step.kind == "edge"
+    assert step.kind == "tenon"
     assert not step.is_container
     assert not step.is_closed_loop
     assert abs(step.short_mm - 3.0) < 1e-6
     assert abs(step.long_mm - 10.0) < 1e-6
     assert step.member_edges == [3, 4, 5]
+
+
+def test_find_features_repeating_similar_tabs_group_into_teeth():
+    # "comb" has two IDENTICAL 3mm x 2mm tabs on its top edge -- a
+    # repeating pattern, so both should be auto-upgraded from a tentative
+    # TENON read to TEETH by _group_teeth, not left as two unrelated lone
+    # tenons.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+
+    idx = next(i for i, e in enumerate(elements) if e.get("id") == "comb")
+    teeth = [f for f in features if f.element_index == idx and not f.is_container]
+    assert len(teeth) == 2
+    assert {f.kind for f in teeth} == {"teeth"}
+    for f in teeth:
+        assert abs(f.short_mm - 2.0) < 1e-6
+        assert abs(f.long_mm - 3.0) < 1e-6
+
+
+def test_find_features_differently_sized_tabs_stay_lone_tenons():
+    # "mixed-tabs" has a 3mm tab and an 8mm tab on the same top edge --
+    # both individually convex, but too different in size to be a
+    # repeating pattern. _group_teeth must not lump them together; each
+    # stays its own lone TENON, exactly like "stepboundary"'s single tab.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, max_feature_mm=18.0)
+
+    idx = next(i for i, e in enumerate(elements) if e.get("id") == "mixed-tabs")
+    tabs = [f for f in features if f.element_index == idx and not f.is_container]
+    assert len(tabs) == 2
+    assert {f.kind for f in tabs} == {"tenon"}
+    sizes = sorted(round(f.long_mm, 6) for f in tabs)
+    assert sizes == [3.0, 8.0]
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +316,7 @@ def test_custom_feature_recovers_a_known_notch():
 
     feature = joints.custom_feature(info, doc.scale_user_units_per_mm, (400, 600), (430, 600))
     assert feature is not None
-    assert feature.kind == "edge"
+    assert feature.kind == "slot"  # concave, same as find_features' own auto-detected read
     assert not feature.is_closed_loop
     assert feature.member_edges == [2, 3, 4]
     assert abs(feature.short_mm - 3.0) < 1e-6
@@ -290,7 +338,7 @@ def test_custom_feature_click_order_is_invariant():
     forward = joints.custom_feature(info, doc.scale_user_units_per_mm, (400, 600), (430, 600))
     reversed_ = joints.custom_feature(info, doc.scale_user_units_per_mm, (430, 600), (400, 600))
     assert forward.member_edges == reversed_.member_edges == [2, 3, 4]
-    assert forward.kind == reversed_.kind == "edge"
+    assert forward.kind == reversed_.kind == "slot"
     assert abs(forward.short_mm - 3.0) < 1e-6
     assert abs(forward.long_mm - 10.0) < 1e-6
 

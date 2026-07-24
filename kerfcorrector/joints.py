@@ -3,9 +3,10 @@
 Two-step workflow (see review_joints.py / apply_joints.py, or app.py for the
 combined GUI):
 
-1. Auto-detect HOLE / EDGE features and let a human verify/adjust/add them
-   in a browser GUI. The result is a small JSON manifest naming exactly
-   which edges to correct.
+1. Auto-detect HOLE/EDGE/MORTICE/TENON/TEETH/SLOT features and let a human
+   verify/adjust/add them in a browser GUI. The result is a small JSON
+   manifest naming exactly which edges to correct, and which of those six
+   kinds each one is.
 2. Apply the manifest: only the specific vertices belonging to an accepted
    feature are moved; every other vertex -- including the rest of a much
    bigger boundary a joint happens to be embedded in -- is re-emitted from
@@ -16,43 +17,56 @@ The guiding principle is simple: every corrected piece should come out at
 every feature shifts by kerf/2 along its own outward normal, sign taken
 from the feature's own nesting depth parity (inward/shrink if material is
 removed -- odd depth -- outward/grow if solid -- even depth). That's the
-whole correction rule: it applies identically no matter what kind of
-feature the edge belongs to, so there's no special-casing between a
-feature's two dimensions, or between features of different kinds.
+base correction rule, and it applies identically regardless of kind -- but
+unlike an earlier version of this tool, `kind` is NOT purely cosmetic
+anymore: mortice/tenon/teeth/slot each carry their own independent extra
+clearance (and tenon its own chamfer) in `apply_manifest`, layered on top
+of that base rule, since kerf alone can't fix an attached feature's own
+fit (see `apply_manifest`'s docstring). Getting a feature's kind right
+matters now in a way it didn't when this tool only exposed HOLE/EDGE.
 
-Because of that, a feature's *kind* is purely a human-facing label for the
-review GUI -- it plays no part in the correction math. Only two kinds are
-exposed:
+Two of the six are unambiguous, purely structural, and always trustworthy:
 
 - HOLE: a closed subpath whose own bounding box is small is treated as one
   whole feature, and flagged HOLE if its nesting depth is odd (material
-  removed -- an actual hole in the finished part). This is the one case
-  worth double-checking in review, since a missed or misplaced hole is
-  visibly wrong; everything else below gets identical treatment regardless
-  of its exact shape.
-- EDGE: everything else -- a standalone small subpath with even depth (a
-  free-standing tab), a local excursion (bump or notch) found by sliding a
-  window of 1..N consecutive edges around a bigger boundary looking for a
-  parallel-walled run, and the plain leftover walls of that boundary once
-  every excursion is claimed. All three are corrected the same offset, so
-  splitting them into separate labels added review-screen detail (tab vs.
-  slot vs. boundary) without changing any output geometry.
+  removed -- an actual hole in the finished part).
+- EDGE: a subpath's own plain leftover boundary walls once every other
+  feature on it is claimed -- never itself a joint.
 
-Detection still runs the same three passes internally (whole small
-subpath, windowed excursion, leftover boundary) since that's what actually
-finds the edges to correct -- `kind` just collapses the result down to
-HOLE / EDGE afterward. One implementation detail survives into the
-payload: `is_container` marks the single leftover-boundary entry each
-subpath gets (if any), since a windowed EDGE feature that's ignored needs
-to fold its edges back into that specific sibling or the finished part
-gets a gap right where the ignored feature was (see kerf_tool.py's
-`boundarySiblingIdx`).
+The other four are a *suggestion*, auto-classified by shape, always
+overridable via the review GUI's cycle buttons since geometry alone can't
+know a designer's intent as well as the designer can:
+
+- TENON vs. TEETH: a standalone small subpath with even depth (a
+  free-standing tab), or a local excursion found by sliding a window of
+  1..N consecutive edges around a bigger boundary, that bulges *outward*
+  (convex, adds material -- see `_convex_or_concave`) is a protruding
+  solid tab. Whole-subpath tabs are always TENON (a repeating comb pattern
+  can't be a standalone closed loop). A windowed one starts as a TENON
+  candidate too, but if 2+ similarly-sized ones turn up on the very same
+  subpath, `_group_teeth` upgrades all of them to TEETH -- a repeating
+  pattern is a finger joint, not a pile of unrelated single tabs.
+- SLOT: a windowed excursion that dents *inward* instead (concave, removes
+  material) -- a notch or sliding-fit channel.
+- MORTICE is never auto-detected: an enclosed hole could just as easily be
+  decorative as a tenon's socket, and there's no repeating-pattern signal
+  the way there is for teeth. It only exists as a manual reclassification
+  of an auto-detected HOLE.
+
+This finer split (tab vs. slot vs. boundary) existed once before, was
+removed when clearance/chamfer didn't exist and kind was cosmetic, and is
+restored here now that it isn't. `is_container` marks the single
+leftover-boundary entry each subpath gets (if any), since a windowed
+feature that's ignored needs to fold its edges back into that specific
+sibling or the finished part gets a gap right where it was (see
+kerf_tool.py's `boundarySiblingIdx`).
 
 Outward/inward direction is derived from each subpath's own winding order
 (`geometry.polygon_signed_area` / `edge_outward_normal`), not a centroid
 heuristic -- centroid-based "outward" is wrong for a concave feature like
 a notch, where the true outward direction points back toward the opening,
-not deeper into the material.
+not deeper into the material. The same winding-derived direction is what
+`_convex_or_concave` uses to tell a bulge from a dent.
 """
 
 from __future__ import annotations
@@ -163,7 +177,7 @@ def analyze(doc: svgio.Document, elements, tolerance_mm: float) -> list[SubpathI
 class Feature:
     element_index: int
     subpath_index: int
-    kind: str  # 'hole' | 'edge'
+    kind: str  # 'hole' | 'edge' | 'mortice' | 'tenon' | 'teeth' | 'slot'
     member_edges: list[int]  # vertex_index values of edges to correct
     short_mm: float
     long_mm: float
@@ -201,6 +215,56 @@ def _window_points(segs, v: int, length: int, period: int) -> list[tuple[float, 
     return pts
 
 
+def _convex_or_concave(info: "SubpathInfo", pts: list[tuple[float, float]]) -> str:
+    """"tenon" if a windowed excursion bulges outward (convex, adds solid
+    material -- a protruding tab), "slot" if it dents inward (concave,
+    removes material -- a notch/channel). Compares the window's own
+    interior points to the straight baseline that would connect its two
+    boundary points: interior points sitting on the outward side of that
+    baseline mean the excursion pushes out past the boundary (a tab);
+    sitting on the inward side means it's recessed behind it (a slot).
+    Direction comes from the subpath's own winding order
+    (`geometry.edge_outward_normal`), not a centroid heuristic, so this is
+    correct even though "outward" for a concave excursion points back
+    toward its own opening rather than deeper into the material."""
+    baseline_dir = geometry._unit(geometry._sub(pts[-1], pts[0]))
+    outward = geometry.edge_outward_normal(info.signed_area, baseline_dir)
+    interior = pts[1:-1] or pts
+    avg = (sum(p[0] for p in interior) / len(interior), sum(p[1] for p in interior) / len(interior))
+    to_avg = geometry._sub(avg, pts[0])
+    return "tenon" if geometry._dot(outward, to_avg) > 0 else "slot"
+
+
+def _group_teeth(tab_candidates: list["Feature"], tolerance_mm: float) -> None:
+    """Auto-upgrade "tenon" to "teeth" wherever 2+ similarly-sized tenon
+    candidates share the same subpath -- a repeating comb pattern is a
+    finger joint (TEETH), not a collection of unrelated single tabs
+    (TENON). This didn't exist in the tool's earlier tab/slot detector
+    (removed in f9e4b90, restored here): that version never needed to
+    split "protruding tab" any further, since kind was purely cosmetic
+    before per-kind clearance existed. Mutates each candidate Feature's
+    `kind` in place, matching how the caller already tracks them in the
+    shared `features` list. A closed-loop standalone tab is deliberately
+    never a candidate here (see find_features) -- teeth are windowed-only
+    by definition, a repeating comb pattern can't be a whole separate
+    subpath."""
+    ungrouped = list(tab_candidates)
+    while ungrouped:
+        anchor = ungrouped.pop()
+        group = [anchor]
+        remaining = []
+        for f in ungrouped:
+            if (abs(f.short_mm - anchor.short_mm) <= tolerance_mm
+                    and abs(f.long_mm - anchor.long_mm) <= tolerance_mm):
+                group.append(f)
+            else:
+                remaining.append(f)
+        ungrouped = remaining
+        if len(group) >= 2:
+            for f in group:
+                f.kind = "teeth"
+
+
 def find_features(
     infos: list[SubpathInfo],
     scale: float,
@@ -209,9 +273,15 @@ def find_features(
     max_window_edges: int = 4,
     min_rect_ratio: float = 0.7,
     angle_tol_cos: float = 0.05,
+    teeth_size_tolerance_mm: float = 0.5,
 ) -> list[Feature]:
-    """Detect HOLE/EDGE candidates. See module docstring for the three
-    detection passes (whole small subpath, windowed excursion, leftover)."""
+    """Detect HOLE/TENON/TEETH/SLOT/EDGE candidates. See module docstring
+    for the three detection passes (whole small subpath, windowed
+    excursion, leftover), and `_convex_or_concave`/`_group_teeth` for how
+    a windowed excursion's kind is chosen. Every auto-detected kind is
+    still just a starting suggestion -- the review GUI's cycle buttons let
+    a human override any single one, since the underlying geometry can't
+    know intent as well as the person who drew it can."""
     features: list[Feature] = []
 
     for info in infos:
@@ -237,7 +307,11 @@ def find_features(
         whole_size_mm = whole_rect.long_len / scale if whole_rect else max(whole_w_mm, whole_h_mm)
 
         if whole_size_mm <= max_feature_mm:
-            kind = "hole" if info.depth % 2 == 1 else "edge"
+            # A whole-subpath feature is never TEETH -- a repeating comb
+            # pattern can't be its own separate closed subpath by
+            # definition (see _group_teeth), so even depth goes straight
+            # to TENON rather than a tentative "tab" needing grouping.
+            kind = "hole" if info.depth % 2 == 1 else "tenon"
             member_edges = list(range(1, period + 1))
             if whole_rect:
                 short_mm, long_mm = whole_rect.short_len / scale, whole_rect.long_len / scale
@@ -250,6 +324,7 @@ def find_features(
             continue
 
         consumed: set[int] = set()
+        subpath_tenon_candidates: list[Feature] = []
         for v in range(1, period + 1):
             if v in consumed:
                 continue
@@ -287,11 +362,23 @@ def find_features(
             window_edges, short_mm, long_mm, pts = match
 
             consumed.update(window_edges)
-            features.append(Feature(
-                info.element_index, info.subpath_index, "edge", window_edges,
+            # Tentatively "tenon" for a convex (bulging-outward) excursion --
+            # _group_teeth below may upgrade it to "teeth" once every
+            # excursion on this subpath has been found, if it turns out to
+            # share this subpath with other similarly-sized tenons (a
+            # repeating comb pattern). Concave excursions need no such
+            # follow-up: they're SLOT outright.
+            kind = _convex_or_concave(info, pts)
+            feature = Feature(
+                info.element_index, info.subpath_index, kind, window_edges,
                 short_mm, long_mm, pts,
                 is_closed_loop=False,
-            ))
+            )
+            features.append(feature)
+            if kind == "tenon":
+                subpath_tenon_candidates.append(feature)
+
+        _group_teeth(subpath_tenon_candidates, teeth_size_tolerance_mm)
 
         leftover = sorted(set(range(1, period + 1)) - consumed)
         if leftover:
@@ -376,10 +463,17 @@ def custom_feature(
     short_mm, long_mm = rect.short_len / scale, rect.long_len / scale
 
     # A manually-added feature is, by construction, a windowed excursion on
-    # an existing boundary (never the whole-subpath case) -- always EDGE,
-    # and its points are an open run just like the auto-detected windowed
-    # case, not a closed loop.
-    return Feature(info.element_index, info.subpath_index, "edge", window_edges, short_mm, long_mm, pts,
+    # an existing boundary (never the whole-subpath case), so the same
+    # convex/concave test applies as find_features' windowed pass -- but
+    # this call is isolated (no sibling excursions to compare against), so
+    # a convex result defaults to "tenon" rather than being auto-grouped
+    # into "teeth" the way 2+ similarly-sized auto-detected ones would be;
+    # cycle it manually if this particular click was in fact one tooth of
+    # a comb pattern the search missed (the single most common reason to
+    # need this tool at all -- see docstring above). Its points are an open
+    # run just like the auto-detected windowed case, not a closed loop.
+    kind = _convex_or_concave(info, pts)
+    return Feature(info.element_index, info.subpath_index, kind, window_edges, short_mm, long_mm, pts,
                     is_closed_loop=False)
 
 

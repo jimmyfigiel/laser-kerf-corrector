@@ -194,20 +194,24 @@ PAGE = """<!doctype html>
       same way by default: it ends up at exactly its own drawn size after
       cutting. Orange = <b>hole</b> (material removed — worth a careful
       look, since a missed or misplaced hole is visibly wrong). Blue =
-      <b>edge</b> (everything else plain: a notch, or a boundary's own
-      walls). A joint that's too snug or too loose can instead be marked as
-      one of four dashed kinds, each with its own extra-clearance number
-      below (independent of kerf, since kerf alone can't fix a fit issue on
-      an attached feature's length axis — see the README): light-orange
+      <b>edge</b> (everything else plain: a boundary's own leftover walls).
+      A tab or notch is auto-classified into one of four dashed kinds, each
+      with its own extra-clearance number below (independent of kerf,
+      since kerf alone can't fix a fit issue on an attached feature's
+      length axis — see the README), starting from what its own shape
+      already says: orange <b>tenon</b> (a lone protruding tab — clearance
+      shrinks it), purple <b>teeth</b> (2+ similarly-sized protruding tabs
+      on the same shape, a repeating finger-joint pattern — clearance
+      shrinks them too), and pink <b>slot</b> (a recessed notch or
+      sliding-fit channel — clearance grows it). Light-orange
       <b>mortice</b> (the socket a tenon plugs into — clearance grows the
-      opening), orange <b>tenon</b> (the tab that plugs in — clearance
-      shrinks it), purple <b>teeth</b> (a finger/comb joint's tabs —
-      clearance shrinks them, same as a tenon), and pink <b>slot</b> (a
-      sliding-fit channel, e.g. a dado a panel slides into — clearance
-      grows it, same direction as a mortice). Tenon also gets chamfered per
-      the chamfer setting below, for an easier lead-in (teeth don't). Click
-      any shape on the canvas to cycle its classification (which options
-      are offered depends on the shape). If a joint wasn't auto-detected
+      opening) is the one exception never auto-suggested, since an
+      enclosed hole could just as easily be decorative — reclassify a
+      <b>hole</b> into it by hand. Every auto-classification is only a
+      starting suggestion; click any shape on the canvas to cycle it to
+      something else (which options are offered depends on the shape).
+      Tenon also gets chamfered per the chamfer setting below, for an
+      easier lead-in (teeth don't). If a joint wasn't auto-detected at all
       (it stayed part of a boundary), use "+ Add missed feature" and click
       its two corners directly. Ctrl/Cmd+Z undoes the last change. Click
       empty canvas space or press Escape to clear a selection. Scroll to

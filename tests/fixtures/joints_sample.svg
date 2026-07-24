@@ -47,4 +47,21 @@
         d="M0,1300 L300,1300 L300,1600 L0,1600 Z" />
   <path class="cut" id="rotated-diamond" fill="none" stroke="black"
         d="M150,1350 L250,1450 L150,1550 L50,1450 Z" />
+
+  <!-- A panel with two IDENTICAL 3mm x 2mm tabs protruding from its top
+       edge (a simple 2-tooth comb pattern): both convex (bulge outward,
+       adding material), and similarly sized enough that find_features'
+       _group_teeth should auto-upgrade both from a tentative TENON read to
+       TEETH, since a repeating pattern on the same subpath is a finger
+       joint, not two unrelated lone tabs. -->
+  <path class="cut" id="comb" fill="none" stroke="black"
+        d="M0,1150 L40,1150 L40,1130 L70,1130 L70,1150 L130,1150 L130,1130 L160,1130 L160,1150 L200,1150 L200,1250 L0,1250 Z" />
+
+  <!-- A panel with two DIFFERENTLY-sized tabs on its top edge (3mm and
+       8mm): both individually convex, but far enough apart in size that
+       _group_teeth must NOT treat them as a repeating pattern. Each stays
+       its own lone TENON. Regression guard against grouping being too
+       eager (e.g. matching on subpath alone, ignoring size). -->
+  <path class="cut" id="mixed-tabs" fill="none" stroke="black"
+        d="M300,1150 L330,1150 L330,1130 L360,1130 L360,1150 L440,1150 L440,1130 L520,1130 L520,1150 L550,1150 L550,1250 L300,1250 Z" />
 </svg>

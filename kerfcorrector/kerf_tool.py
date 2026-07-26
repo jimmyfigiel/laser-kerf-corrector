@@ -123,14 +123,18 @@ PAGE = """<!doctype html>
      everything. */
   #overlay-svg .edge { stroke: #3c96ff; }
   /* mortice/tenon/teeth/slot each get their own color so a clearance-tuned
-     joint stands out from a plain hole/edge, but stay unfilled for the same
-     reason edge does. tenon/teeth (solid, protruding) keep the colors this
-     tool has used since tab_hole/tab_finger; mortice/slot (voids) get two
-     new hues since they're new distinctions, not renames of anything. */
-  #overlay-svg .tenon { stroke: #ffb347; stroke-dasharray: 5 2; }
-  #overlay-svg .teeth { stroke: #b967ff; stroke-dasharray: 5 2; }
-  #overlay-svg .mortice { stroke: #2bb8b3; stroke-dasharray: 5 2; }
-  #overlay-svg .slot { stroke: #ff6fae; stroke-dasharray: 5 2; }
+     joint stands out from a plain hole/edge. tenon/teeth (solid,
+     protruding) keep the colors this tool has used since tab_hole/
+     tab_finger; mortice/slot (voids) get two new hues since they're new
+     distinctions, not renames of anything. Filled (like hole) rather than
+     outline-only like edge -- these are always individual small tabs/
+     notches, never the whole-panel leftover boundary, so a translucent
+     fill makes them easy to spot at a glance without ever washing out the
+     artwork underneath the way filling the container edge would. */
+  #overlay-svg .tenon { fill: rgba(255,179,71,0.45); stroke: #ffb347; stroke-dasharray: 5 2; }
+  #overlay-svg .teeth { fill: rgba(185,103,255,0.45); stroke: #b967ff; stroke-dasharray: 5 2; }
+  #overlay-svg .mortice { fill: rgba(43,184,179,0.45); stroke: #2bb8b3; stroke-dasharray: 5 2; }
+  #overlay-svg .slot { fill: rgba(255,111,174,0.45); stroke: #ff6fae; stroke-dasharray: 5 2; }
   #overlay-svg .ignored-merged { stroke: rgba(60,150,255,0.55); stroke-dasharray: 2 3; }
   #overlay-svg .hot { stroke: #ffd400; stroke-width: 2; }
   #sidebar { width: 360px; background: #262626; display: flex; flex-direction: column; border-left: 1px solid #444; overflow-y: auto; }
@@ -256,8 +260,9 @@ clearance shrinks them, same as a tenon), and pink <b>slot</b> (a
 sliding-fit channel, e.g. a dado a panel slides into &mdash; clearance
 grows it, same direction as a mortice). Tenon also gets chamfered per
 the chamfer setting below, for an easier lead-in (teeth don't). Click
-any shape on the canvas to cycle its classification (which options
-are offered depends on the shape). If a joint wasn't auto-detected
+any shape on the canvas to cycle through all seven kinds &mdash; the
+cycle never restricts which kind fits which shape, since you know the
+design's intent better than the geometry does. If a joint wasn't auto-detected
 (it stayed part of a boundary), use "+ Add missed feature" and click
 its two corners directly. Ctrl/Cmd+Z undoes the last change. Click
 empty canvas space or press Escape to clear a selection. Scroll to
@@ -342,25 +347,20 @@ document.getElementById('change-file').addEventListener('click', () => {
 // ---------------- review mode ----------------
 let DATA = [], state = [], polys = [], selectedIdx = null;
 
-// mortice/tenon/teeth/slot each get their own extra clearance (+ chamfer
-// for tenon only) in apply_manifest, unlike hole/edge which are cosmetic --
-// so which classification is offered depends on the feature's own
-// structure. A container (the leftover-boundary catch-all) is never any of
-// these. A mortice is a socket -- always a fully enclosed cutout, same
-// structural shape as a plain hole -- so it's only offered where "hole" is:
-// a closed loop. A closed loop can ALSO be a standalone tenon (a
-// free-standing tab not attached to anything), but never teeth, since a
-// finger joint is by definition attached to a bigger boundary. A windowed
-// (attached) feature is never "the hole"/mortice kind -- those are reserved
-// for the whole-subpath case -- but can be either tenon or teeth, since a
-// single attached tab could be headed into a hole or be one tooth of a
-// finger joint; only you know which. A slot (sliding-fit channel) can be
-// either structural shape -- a standalone enclosed cutout, or a channel
-// open at a boundary's edge -- so it's offered in both cases.
+// Every feature -- including the leftover-boundary container -- offers the
+// full set of kinds to cycle through. apply_manifest doesn't derive its
+// correction sign from a feature's is_container/is_closed_loop label at
+// all; it recomputes the real structural shape from the manifest's own
+// member_edges vs. the subpath's period at apply time (see
+// _extra_clearance_sign in joints.py), so any kind is geometrically safe to
+// assign to any feature. Restricting the cycle by structure was a UI-only
+// guess at what's "sensible", and it made auto-detection misses (a joint
+// the windowed search failed to carve out, left sitting in the container as
+// unclassified boundary) impossible to fix by cycling -- the only escape
+// was the separate "+ Add missed feature" tool. Full override removes that
+// dead end.
 function cycleOptions(d) {
-  if (d.is_container) return ['ignored', 'edge'];
-  if (d.is_closed_loop) return ['ignored', 'hole', 'edge', 'mortice', 'tenon', 'slot'];
-  return ['ignored', 'edge', 'tenon', 'teeth', 'slot'];
+  return ['ignored', 'hole', 'edge', 'mortice', 'tenon', 'teeth', 'slot'];
 }
 
 async function analyzeFile() {

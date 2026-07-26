@@ -26,7 +26,29 @@ This is the same Flask app whether run locally or deployed (see
 "Deploying" below) — nothing about it depends on running on your own
 machine.
 
+### Basic vs. Advanced analysis
+
+The review sidebar has a **Basic** / **Advanced** toggle, above the
+candidate list. **Basic** (the default) is plain kerf correction: every
+subpath is either a **hole** (material removed) or an **edge** (everything
+else), and that's it — no joint-type detection, no extra-clearance
+settings to think about. This is the right choice whenever kerf alone
+already gets the fit right, which is the common case once kerf itself is
+correctly calibrated for your machine/material (a mismeasured kerf, or a
+stroke-width setting the laser software isn't actually honoring, can look
+exactly like "kerf alone isn't enough" when the real problem is just a
+wrong kerf number).
+
+**Advanced** re-enables the mortice/tenon/teeth/slot detection described
+below, for the cases where a specific joint genuinely needs more or less
+room than plain kerf correction gives it (see "Fine-tuning joint fit").
+Switching modes re-analyzes the file from scratch, so any manual
+reclassifications made under the old mode are lost, same as re-uploading
+would be — pick a mode first, then do your review.
+
 ### Fine-tuning joint fit: mortice/tenon/teeth/slot, extra clearance, and chamfering
+
+*(Only relevant in Advanced mode — see above.)*
 
 Kerf correction alone gets every *independently-cut* wall of a feature back
 to its drawn size — but a feature attached to a bigger boundary (a

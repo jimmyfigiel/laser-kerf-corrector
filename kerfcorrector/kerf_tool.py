@@ -123,15 +123,17 @@ PAGE = """<!doctype html>
      everything. */
   #overlay-svg .edge { stroke: #3c96ff; }
   /* mortice/tenon/teeth/slot each get their own color so a clearance-tuned
-     joint stands out from a plain hole/edge. tenon/teeth (solid,
-     protruding) keep the colors this tool has used since tab_hole/
-     tab_finger; mortice/slot (voids) get two new hues since they're new
-     distinctions, not renames of anything. Filled (like hole) rather than
+     joint stands out from a plain hole/edge. teeth keeps the color this
+     tool has used since tab_finger; mortice/slot (voids) get two new hues
+     since they're new distinctions, not renames of anything. tenon was
+     originally an orange similar enough to hole's own orange to be easy to
+     mix up at a glance, so it's green instead -- distinct from every other
+     kind's hue, including mortice's teal. Filled (like hole) rather than
      outline-only like edge -- these are always individual small tabs/
      notches, never the whole-panel leftover boundary, so a translucent
      fill makes them easy to spot at a glance without ever washing out the
      artwork underneath the way filling the container edge would. */
-  #overlay-svg .tenon { fill: rgba(255,179,71,0.45); stroke: #ffb347; stroke-dasharray: 5 2; }
+  #overlay-svg .tenon { fill: rgba(76,175,80,0.45); stroke: #4caf50; stroke-dasharray: 5 2; }
   #overlay-svg .teeth { fill: rgba(185,103,255,0.45); stroke: #b967ff; stroke-dasharray: 5 2; }
   #overlay-svg .mortice { fill: rgba(43,184,179,0.45); stroke: #2bb8b3; stroke-dasharray: 5 2; }
   #overlay-svg .slot { fill: rgba(255,111,174,0.45); stroke: #ff6fae; stroke-dasharray: 5 2; }
@@ -149,7 +151,7 @@ PAGE = """<!doctype html>
   .row .cls-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-left: 6px; }
   .cls-badge.hole { background: #ff9622; color: #201400; }
   .cls-badge.edge { background: #3c96ff; color: #001428; }
-  .cls-badge.tenon { background: #ffb347; color: #291a00; }
+  .cls-badge.tenon { background: #4caf50; color: #0f2b10; }
   .cls-badge.teeth { background: #b967ff; color: #1c0029; }
   .cls-badge.mortice { background: #2bb8b3; color: #04211f; }
   .cls-badge.slot { background: #ff6fae; color: #2e0016; }
@@ -252,9 +254,9 @@ look, since a missed or misplaced hole is visibly wrong). Blue =
 walls). A joint that's too snug or too loose can instead be marked as
 one of four dashed kinds, each with its own extra-clearance number
 below (independent of kerf, since kerf alone can't fix a fit issue on
-an attached feature's length axis &mdash; see the README): light-orange
+an attached feature's length axis &mdash; see the README): teal
 <b>mortice</b> (the socket a tenon plugs into &mdash; clearance grows the
-opening), orange <b>tenon</b> (the tab that plugs in &mdash; clearance
+opening), green <b>tenon</b> (the tab that plugs in &mdash; clearance
 shrinks it), purple <b>teeth</b> (a finger/comb joint's tabs &mdash;
 clearance shrinks them, same as a tenon), and pink <b>slot</b> (a
 sliding-fit channel, e.g. a dado a panel slides into &mdash; clearance

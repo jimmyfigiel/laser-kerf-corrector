@@ -159,6 +159,10 @@ PAGE = """<!doctype html>
   .row-controls { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
   .row-controls button { font-size: 11px; padding: 3px 8px; border: 1px solid #555; background: #333; color: #ddd; border-radius: 3px; cursor: pointer; }
   .row-controls button.active { background: #567; border-color: #789; }
+  #mode-toggle { display: flex; gap: 0; margin: 0 14px 6px; border: 1px solid #555; border-radius: 4px; overflow: hidden; }
+  .mode-btn { flex: 1; font-size: 12px; padding: 6px 0; border: none; background: #333; color: #bbb; cursor: pointer; }
+  .mode-btn:first-child { border-right: 1px solid #555; }
+  .mode-btn.active { background: #3c6e96; color: #fff; }
   #apply-panel { padding: 14px; }
   #status { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.6); padding: 6px 10px; border-radius: 4px; font-size: 12px; pointer-events: none; }
   .help-icon { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;
@@ -205,6 +209,11 @@ PAGE = """<!doctype html>
     </div>
     <div id="sidebar">
       <h2>Candidates <span class="help-icon" id="candidates-help">?</span></h2>
+      <div id="mode-toggle">
+        <button class="mode-btn active" data-mode="basic" type="button">Basic</button>
+        <button class="mode-btn" data-mode="advanced" type="button">Advanced</button>
+      </div>
+      <div class="sub" id="mode-caption" style="margin:0 14px 10px;">Basic: hole/edge only, kerf correction alone. Advanced: also detects mortice/tenon/teeth/slot for per-kind extra clearance.</div>
       <button id="reset-view" style="margin:0 14px 4px; width:calc(100% - 28px)">Reset view</button>
       <button id="add-mode" style="margin:0 14px 4px; width:calc(100% - 28px)">+ Add missed feature</button>
       <button id="undo-btn" style="margin:0 14px 10px; width:calc(100% - 28px)" disabled>Undo</button>
@@ -349,6 +358,28 @@ document.getElementById('change-file').addEventListener('click', () => {
 // ---------------- review mode ----------------
 let DATA = [], state = [], polys = [], selectedIdx = null;
 
+// Basic (default): plain hole/edge only -- for when the machine's kerf
+// number alone already gets the fit right and the mortice/tenon/teeth/slot
+// detection pass (and the extra-clearance settings it implies) is pure
+// overhead. Advanced re-enables that detection. Switching modes re-runs
+// analysis from scratch (see the click handler below), since it's a
+// different classification of the same file, not a filter over one set of
+// results -- any manual reclassifications made under the old mode are
+// lost, same as re-uploading would do.
+let detectJoints = false;
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const basic = btn.dataset.mode === 'basic';
+    if (basic === !detectJoints) return;
+    detectJoints = !basic;
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === btn.dataset.mode));
+    document.getElementById('add-mode').style.display = detectJoints ? '' : 'none';
+    if (basic && typeof addMode !== 'undefined' && addMode) document.getElementById('add-mode').click();
+    if (uploadToken) analyzeFile();
+  });
+});
+document.getElementById('add-mode').style.display = detectJoints ? '' : 'none';
+
 // Every feature -- including the leftover-boundary container -- offers the
 // full set of kinds to cycle through. apply_manifest doesn't derive its
 // correction sign from a feature's is_container/is_closed_loop label at
@@ -369,7 +400,7 @@ async function analyzeFile() {
   const status = document.getElementById('review-status');
   status.className = 'panel';
   status.textContent = 'Analyzing...';
-  const resp = await fetch(API + '/api/analyze', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ token: uploadToken }) });
+  const resp = await fetch(API + '/api/analyze', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ token: uploadToken, detect_joints: detectJoints }) });
   const data = await resp.json();
   if (!resp.ok) {
     status.className = 'panel report err';
@@ -902,7 +933,8 @@ def analyze():
         if not elements:
             return jsonify({"error": "No cut-line elements found (nothing has fill:none/transparent)."}), 400
         infos = joints.analyze(doc, elements, tolerance_mm=0.3)
-        features = joints.find_features(infos, doc.scale_user_units_per_mm)
+        detect_joints = bool(body.get("detect_joints", True))
+        features = joints.find_features(infos, doc.scale_user_units_per_mm, detect_joints=detect_joints)
         payload = joints.to_payload(features)
         bg_content, view_box = _svg_inner_and_viewbox(_UPLOADS[body["token"]]["bytes"])
     except Exception as e:

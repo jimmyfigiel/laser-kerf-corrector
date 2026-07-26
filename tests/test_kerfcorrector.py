@@ -299,6 +299,67 @@ def test_find_features_differently_sized_tabs_stay_lone_tenons():
 
 
 # ---------------------------------------------------------------------------
+# Basic mode (detect_joints=False): plain hole/edge only, no windowed search
+# ---------------------------------------------------------------------------
+
+def test_find_features_basic_mode_only_hole_and_edge():
+    # Across the whole fixture (which includes windowed tenons, slots, and
+    # a grouped-teeth comb in advanced mode), basic mode must never produce
+    # anything but hole/edge -- no windowed search, no whole-small-subpath
+    # tenon carve-out, so none of the other four kinds can appear at all.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, detect_joints=False)
+
+    assert features  # sanity: the fixture actually has closed subpaths
+    assert {f.kind for f in features} <= {"hole", "edge"}
+    assert not any(f.is_container for f in features)
+
+
+def test_find_features_basic_mode_one_feature_per_subpath():
+    # "edgenotch" is a single subpath with a notch windowed into one edge --
+    # in advanced mode that's 2 features (a slot + the leftover-boundary
+    # edge container). In basic mode it must collapse back to exactly ONE
+    # feature spanning the subpath's entire boundary, since there's nothing
+    # left over to carve out.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+
+    advanced = joints.find_features(infos, doc.scale_user_units_per_mm)
+    basic = joints.find_features(infos, doc.scale_user_units_per_mm, detect_joints=False)
+
+    idx = next(i for i, e in enumerate(elements) if e.get("id") == "edgenotch")
+    advanced_here = [f for f in advanced if f.element_index == idx]
+    basic_here = [f for f in basic if f.element_index == idx]
+    assert len(advanced_here) == 2  # slot + edge container, in advanced mode
+    assert len(basic_here) == 1
+    only = basic_here[0]
+    assert only.kind == "edge"
+    info = next(i for i in infos if i.element_index == idx)
+    period = len(info.root_segments) - 1
+    assert only.member_edges == list(range(1, period + 1))
+    assert only.is_closed_loop
+
+
+def test_find_features_basic_mode_still_finds_holes():
+    # Depth-based hole/edge classification (the one thing basic mode keeps)
+    # must still work: "rotated-diamond" is nested one level inside
+    # "diamond-container", so it's still ODD depth -> HOLE, same as in
+    # advanced mode -- only the windowed joint detection is skipped, not
+    # the underlying nesting-depth logic.
+    doc = svgio.load(JOINTS_FIXTURE)
+    elements = cli.select_elements(doc, None, include_fill=False)
+    infos = joints.analyze(doc, elements, tolerance_mm=0.02)
+    features = joints.find_features(infos, doc.scale_user_units_per_mm, detect_joints=False)
+
+    idx = next(i for i, e in enumerate(elements) if e.get("id") == "rotated-diamond")
+    diamond = next(f for f in features if f.element_index == idx)
+    assert diamond.kind == "hole"
+
+
+# ---------------------------------------------------------------------------
 # Manually adding a feature the auto-detector missed (joints.custom_feature)
 # ---------------------------------------------------------------------------
 

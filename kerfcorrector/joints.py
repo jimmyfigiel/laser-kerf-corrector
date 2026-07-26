@@ -25,6 +25,12 @@ of that base rule, since kerf alone can't fix an attached feature's own
 fit (see `apply_manifest`'s docstring). Getting a feature's kind right
 matters now in a way it didn't when this tool only exposed HOLE/EDGE.
 
+That extra detection is optional, though: `find_features`'s
+`detect_joints=False` ("basic" mode in the review GUI) skips it entirely
+and goes back to plain HOLE/EDGE-only classification, for a shop whose
+kerf number alone already gets the fit right and doesn't need per-kind
+extra clearance at all.
+
 Two of the six are unambiguous, purely structural, and always trustworthy:
 
 - HOLE: a closed subpath whose own bounding box is small is treated as one
@@ -274,6 +280,7 @@ def find_features(
     min_rect_ratio: float = 0.7,
     angle_tol_cos: float = 0.05,
     teeth_size_tolerance_mm: float = 0.5,
+    detect_joints: bool = True,
 ) -> list[Feature]:
     """Detect HOLE/TENON/TEETH/SLOT/EDGE candidates. See module docstring
     for the three detection passes (whole small subpath, windowed
@@ -281,7 +288,17 @@ def find_features(
     a windowed excursion's kind is chosen. Every auto-detected kind is
     still just a starting suggestion -- the review GUI's cycle buttons let
     a human override any single one, since the underlying geometry can't
-    know intent as well as the person who drew it can."""
+    know intent as well as the person who drew it can.
+
+    `detect_joints=False` is the tool's "basic" mode: it skips the windowed-
+    excursion search and the whole-small-subpath tenon/teeth/slot carve-out
+    entirely, and every subpath becomes exactly one feature spanning its own
+    full boundary, labeled HOLE (odd nesting depth) or EDGE (even) -- for
+    when per-kind extra clearance isn't needed and kerf correction alone
+    already gets the fit right, so the extra detection work (and the
+    tenon/teeth/mortice/slot choices it produces) is pure overhead. Every
+    basic-mode feature is a closed loop by construction, and none of them
+    are ever a leftover CONTAINER, since nothing is left unclaimed."""
     features: list[Feature] = []
 
     for info in infos:
@@ -305,6 +322,19 @@ def find_features(
         # undifferentiated "boundary" despite being well within the cap.
         whole_rect = geometry.fit_rectangle(info.poly)
         whole_size_mm = whole_rect.long_len / scale if whole_rect else max(whole_w_mm, whole_h_mm)
+
+        if not detect_joints:
+            kind = "hole" if info.depth % 2 == 1 else "edge"
+            if whole_rect:
+                short_mm, long_mm = whole_rect.short_len / scale, whole_rect.long_len / scale
+            else:
+                short_mm, long_mm = min(whole_w_mm, whole_h_mm), max(whole_w_mm, whole_h_mm)
+            features.append(Feature(
+                info.element_index, info.subpath_index, kind,
+                list(range(1, period + 1)),
+                short_mm, long_mm, geometry.polygon_to_points(info.poly),
+            ))
+            continue
 
         if whole_size_mm <= max_feature_mm:
             # A whole-subpath feature is never TEETH -- a repeating comb

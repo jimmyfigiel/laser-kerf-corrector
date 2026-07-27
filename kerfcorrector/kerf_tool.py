@@ -313,10 +313,12 @@ shrinks it), purple <b>teeth</b> (a finger/comb joint's tabs &mdash;
 clearance shrinks them, same as a tenon), and pink <b>slot</b> (a
 sliding-fit channel, e.g. a dado a panel slides into &mdash; clearance
 grows it, same direction as a mortice). Tenon also gets chamfered per
-the chamfer setting below, for an easier lead-in (teeth don't). Click
-any shape on the canvas to cycle through all seven kinds &mdash; the
-cycle never restricts which kind fits which shape, since you know the
-design's intent better than the geometry does. If a joint wasn't auto-detected
+the chamfer setting below, for an easier lead-in (teeth don't). All of
+this is Advanced-mode only &mdash; in Basic mode, clicking a shape just
+toggles it between hole and edge, matching what auto-detection already
+assigns; switch to Advanced (top of this panel) for the full seven-kind
+cycle, with no restriction on which kind fits which shape, since you know
+the design's intent better than the geometry does. If a joint wasn't auto-detected
 (it stayed part of a boundary), use "+ Add missed feature" and click
 its two corners directly. Ctrl/Cmd+Z undoes the last change. Click
 empty canvas space or press Escape to clear a selection. Scroll to
@@ -425,19 +427,25 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
 document.getElementById('add-mode').style.display = detectJoints ? '' : 'none';
 document.getElementById('advanced-settings').style.display = detectJoints ? '' : 'none';
 
-// Every feature -- including the leftover-boundary container -- offers the
-// full set of kinds to cycle through. apply_manifest doesn't derive its
-// correction sign from a feature's is_container/is_closed_loop label at
-// all; it recomputes the real structural shape from the manifest's own
-// member_edges vs. the subpath's period at apply time (see
-// _extra_clearance_sign in joints.py), so any kind is geometrically safe to
-// assign to any feature. Restricting the cycle by structure was a UI-only
-// guess at what's "sensible", and it made auto-detection misses (a joint
-// the windowed search failed to carve out, left sitting in the container as
-// unclassified boundary) impossible to fix by cycling -- the only escape
-// was the separate "+ Add missed feature" tool. Full override removes that
-// dead end.
+// In Advanced mode, every feature -- including the leftover-boundary
+// container -- offers the full set of kinds to cycle through.
+// apply_manifest doesn't derive its correction sign from a feature's
+// is_container/is_closed_loop label at all; it recomputes the real
+// structural shape from the manifest's own member_edges vs. the subpath's
+// period at apply time (see _extra_clearance_sign in joints.py), so any
+// kind is geometrically safe to assign to any feature. Restricting the
+// cycle by structure was a UI-only guess at what's "sensible", and it made
+// auto-detection misses (a joint the windowed search failed to carve out,
+// left sitting in the container as unclassified boundary) impossible to
+// fix by cycling -- the only escape was the separate "+ Add missed
+// feature" tool. Full override removes that dead end.
+//
+// In Basic mode, the cycle is strictly hole/edge -- no "ignored" step and
+// none of the four joint kinds, matching what find_features(detect_joints=
+// False) ever actually produces server-side (see joints.py), so there's
+// nothing to cycle INTO that the backend wouldn't already have chosen.
 function cycleOptions(d) {
+  if (!detectJoints) return ['hole', 'edge'];
   return ['ignored', 'hole', 'edge', 'mortice', 'tenon', 'teeth', 'slot'];
 }
 

@@ -230,8 +230,11 @@ auto-detected hole.
 A browser window opens showing the sheet with the detected features
 overlaid and color-coded (scroll to zoom, drag to pan). The sidebar lists
 every feature with its detected size and a button to cycle its
-classification (which options are offered depends on the shape's own
-structure — see "Fine-tuning joint fit" above). Click any shape
+classification — which options are offered depends on the Basic/Advanced
+toggle, not the shape's own structure: Basic is a plain hole/edge toggle
+only, matching what Basic detection ever assigns; Advanced offers the
+full seven kinds on every feature regardless of its structure (see
+"Fine-tuning joint fit" above). Click any shape
 directly on the canvas to cycle it the same way, including ones never
 auto-suggested — clicking always hits the smallest feature under the
 pointer, so a small notch nested inside a big container polygon stays

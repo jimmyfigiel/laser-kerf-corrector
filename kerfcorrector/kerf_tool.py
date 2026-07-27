@@ -1,16 +1,21 @@
 """Laser kerf corrector tool: upload an SVG, review/select joints in the
 browser, download the corrected file. A Flask Blueprint so it can be
 mounted alongside other tools on a shared hub app (see hub.py) -- safe to
-host publicly, unlike the old local-only version, since it never touches
-the server's filesystem: uploads live in memory, keyed by an opaque token,
+host publicly, unlike the old local-only version, since it never writes an
+uploaded file to disk: uploads live in memory, keyed by an opaque token,
 and results come back as a download rather than a server-side file write.
+The one thing that *is* written to disk is the usage counter below, a
+single small number surviving deploys/restarts on purpose (see its own
+comment).
 """
 
 from __future__ import annotations
 
 import io
+import os
 import time
 import uuid
+from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request
 from lxml import etree
@@ -18,6 +23,32 @@ from lxml import etree
 from . import cli, joints, svgio
 
 bp = Blueprint("kerf_tool", __name__, url_prefix="/kerf-corrector")
+
+# Counts completed corrections (a successful /api/apply call, not just a
+# page load or an upload) -- the strongest signal of the tool actually being
+# used for something, not just opened. A plain text file rather than
+# anything fancier: this deployment runs a single worker process (see
+# _UPLOADS below), so there's no real concurrent-write race to guard
+# against, and a whole database would be a lot of ceremony for one number.
+# Same directory convention as feedback.py's DATA_FILE -- outside the
+# git-tracked repo, so `git pull` never touches it and it survives every
+# deploy/reload.
+_USAGE_DATA_DIR = Path(os.environ.get("KERF_TOOL_DATA_DIR", str(Path.home() / "laser-kerf-corrector-data")))
+_USAGE_COUNT_FILE = _USAGE_DATA_DIR / "kerf-corrector-usage-count.txt"
+
+
+def _read_usage_count() -> int:
+    try:
+        return int(_USAGE_COUNT_FILE.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def _increment_usage_count() -> int:
+    count = _read_usage_count() + 1
+    _USAGE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _USAGE_COUNT_FILE.write_text(str(count), encoding="utf-8")
+    return count
 
 # token -> {"bytes": bytes, "filename": str, "ts": float}. In-memory and
 # per-process: fine for a single-worker deployment (PythonAnywhere's free/
@@ -67,6 +98,7 @@ PAGE = """<!doctype html>
   #topbar h1 { font-size: 14px; margin: 0; font-weight: 600; }
   #topbar h1 a { color: #ddd; text-decoration: none; }
   #topbar .file { font-size: 12px; color: #9c9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  #topbar .usage-count { font-size: 11px; color: #777; white-space: nowrap; }
   #topbar a.action { color: #6cf; font-size: 12px; cursor: pointer; text-decoration: none; }
   .screen { display: none; height: calc(100% - 41px); }
   .screen.active { display: block; }
@@ -181,6 +213,7 @@ PAGE = """<!doctype html>
   <h1><a href="__HUB_URL__">&larr; Tools</a> / Laser kerf corrector</h1>
   <div class="file" id="topbar-file"></div>
   <a class="action" id="change-file" style="display:none">upload a different file</a>
+  <div class="usage-count" id="usage-count" title="Completed corrections since this counter started">Used __USAGE_COUNT__ times</div>
   <a class="action" href="/feedback/?tool=Laser%20Kerf%20Corrector" target="_blank">report a bug / suggest a feature</a>
 </div>
 
@@ -848,6 +881,9 @@ document.getElementById('r-apply').addEventListener('click', async () => {
   link.textContent = 'Download ' + data.download_name;
   link.setAttribute('download', data.download_name);
   rep.appendChild(link);
+  if (typeof data.usage_count === 'number') {
+    document.getElementById('usage-count').textContent = 'Used ' + data.usage_count + ' times';
+  }
 });
 
 // Settings profiles are just the 6 apply-panel numbers, saved as a
@@ -905,7 +941,8 @@ document.getElementById('r-load-settings-file').addEventListener('change', async
 
 @bp.route("/")
 def index():
-    return PAGE.replace("__HUB_URL__", "/").replace("__API_PREFIX__", bp.url_prefix)
+    return (PAGE.replace("__HUB_URL__", "/").replace("__API_PREFIX__", bp.url_prefix)
+            .replace("__USAGE_COUNT__", str(_read_usage_count())))
 
 
 @bp.route("/api/upload", methods=["POST"])
@@ -993,6 +1030,7 @@ def apply():
         "corrected": stats.corrected,
         "elements_touched": stats.elements_touched,
         "warnings": stats.warnings,
+        "usage_count": _increment_usage_count(),
         "download_token": download_token,
         "download_name": download_name,
     })

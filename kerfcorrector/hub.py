@@ -16,12 +16,6 @@ TOOLS = [
         "url": kerf_tool.bp.url_prefix + "/",
     },
     {
-        "name": "Kerf Finder",
-        "description": "Cut four small test pieces -- a kerf square, a mortice/tenon, a finger-joint, "
-                        "and a slot ladder -- and download a settings profile for the Kerf Corrector above.",
-        "url": kerf_finder_tool.bp.url_prefix + "/",
-    },
-    {
         "name": "Tapered Cup Etching Pattern",
         "description": "Warp a photo or logo for a tapered cup's front panel so it looks "
                         "undistorted once etched with a rotary attachment.",

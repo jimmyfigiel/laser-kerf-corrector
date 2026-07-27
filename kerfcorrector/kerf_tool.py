@@ -191,7 +191,18 @@ PAGE = """<!doctype html>
   .row-controls { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
   .row-controls button { font-size: 11px; padding: 3px 8px; border: 1px solid #555; background: #333; color: #ddd; border-radius: 3px; cursor: pointer; }
   .row-controls button.active { background: #567; border-color: #789; }
-  #mode-toggle { display: flex; gap: 0; margin: 0 14px 6px; border: 1px solid #555; border-radius: 4px; overflow: hidden; }
+  /* flex-shrink: 0 matters here: #sidebar is a flex COLUMN, and this is one
+     of its direct children. `overflow: hidden` (kept for the rounded
+     corners) has a well-known side effect on a flex item -- it changes the
+     item's *automatic minimum size* from content-based to 0, so on a short
+     viewport where #sidebar's own content overflows its available height,
+     the flex algorithm preferentially shrinks THIS element toward zero
+     instead of just letting #sidebar's own overflow-y:auto scroll normally
+     the way every other sidebar child does. flex-shrink: 0 opts it out of
+     that shrinking entirely, so it stays full height and the sidebar
+     scrolls instead -- exactly what already happens for every sibling that
+     doesn't set overflow. */
+  #mode-toggle { display: flex; flex-shrink: 0; gap: 0; margin: 0 14px 6px; border: 1px solid #555; border-radius: 4px; overflow: hidden; }
   .mode-btn { flex: 1; font-size: 12px; padding: 6px 0; border: none; background: #333; color: #bbb; cursor: pointer; }
   .mode-btn:first-child { border-right: 1px solid #555; }
   .mode-btn.active { background: #3c6e96; color: #fff; }

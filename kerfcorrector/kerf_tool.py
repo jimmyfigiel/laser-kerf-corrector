@@ -207,6 +207,14 @@ PAGE = """<!doctype html>
   .mode-btn:first-child { border-right: 1px solid #555; }
   .mode-btn.active { background: #3c6e96; color: #fff; }
   #apply-panel { padding: 14px; }
+  /* #apply-panel never had class="panel", so its label/input never picked
+     up .panel's block-layout rules below and fell back to inline defaults
+     -- browser-default label/input wrap onto the same line and only break
+     unpredictably when they run out of horizontal room, which is the
+     "weird spacing" at the sidebar's ~330px content width. Scoped rules
+     here give each one its own line, same visual language as .panel. */
+  #apply-panel label { display: block; font-size: 12px; color: #aaa; margin: 10px 0 3px; }
+  #apply-panel input { display: block; width: 100%; box-sizing: border-box; background: #2a2a2a; border: 1px solid #444; color: #ddd; padding: 7px; border-radius: 4px; font-size: 13px; }
   #status { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.6); padding: 6px 10px; border-radius: 4px; font-size: 12px; pointer-events: none; }
   .help-icon { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;
     border-radius: 50%; background: #3c3c3c; color: #9c9c9c; font-size: 10px; font-weight: 700;
@@ -267,16 +275,18 @@ PAGE = """<!doctype html>
       <div id="apply-panel">
         <label>Kerf (total, mm)</label>
         <input type="number" step="0.01" id="r-kerf" value="0.15">
-        <label>Mortice extra clearance (mm)</label>
-        <input type="number" step="0.01" id="r-mortice-clearance" value="0">
-        <label>Tenon extra clearance (mm)</label>
-        <input type="number" step="0.01" id="r-tenon-clearance" value="0">
-        <label>Teeth extra clearance (mm)</label>
-        <input type="number" step="0.01" id="r-teeth-clearance" value="0">
-        <label>Slot extra clearance (mm)</label>
-        <input type="number" step="0.01" id="r-slot-clearance" value="0">
-        <label>Tenon chamfer (mm, 0 = off)</label>
-        <input type="number" step="0.01" id="r-chamfer" value="0">
+        <div id="advanced-settings">
+          <label>Mortice extra clearance (mm)</label>
+          <input type="number" step="0.01" id="r-mortice-clearance" value="0">
+          <label>Tenon extra clearance (mm)</label>
+          <input type="number" step="0.01" id="r-tenon-clearance" value="0">
+          <label>Teeth extra clearance (mm)</label>
+          <input type="number" step="0.01" id="r-teeth-clearance" value="0">
+          <label>Slot extra clearance (mm)</label>
+          <input type="number" step="0.01" id="r-slot-clearance" value="0">
+          <label>Tenon chamfer (mm, 0 = off)</label>
+          <input type="number" step="0.01" id="r-chamfer" value="0">
+        </div>
         <div class="actions"><button class="btn" id="r-apply">Apply correction</button></div>
         <div id="r-apply-report"></div>
         <div class="actions" style="margin-top:14px">
@@ -418,11 +428,13 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
     detectJoints = !basic;
     document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === btn.dataset.mode));
     document.getElementById('add-mode').style.display = detectJoints ? '' : 'none';
+    document.getElementById('advanced-settings').style.display = detectJoints ? '' : 'none';
     if (basic && typeof addMode !== 'undefined' && addMode) document.getElementById('add-mode').click();
     if (uploadToken) analyzeFile();
   });
 });
 document.getElementById('add-mode').style.display = detectJoints ? '' : 'none';
+document.getElementById('advanced-settings').style.display = detectJoints ? '' : 'none';
 
 // Every feature -- including the leftover-boundary container -- offers the
 // full set of kinds to cycle through. apply_manifest doesn't derive its

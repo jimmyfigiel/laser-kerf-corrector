@@ -185,14 +185,30 @@ def test_arc_length_exceeds_apparent_chord_width():
     assert design.arc_length_mm == pytest.approx(design.phi_max_rad * design.local_diameter_mm)
 
 
-def test_arc_length_converges_to_chord_width_for_small_angles():
-    # As phi_max -> 0, sin(phi_max) -> phi_max, so arc length and apparent
-    # width should converge (the small-taper/small-coverage case is nearly
-    # flat, where the arc-vs-chord distinction barely matters).
+def test_apparent_width_converges_to_arc_width_for_small_angles():
+    # As the half-angle -> 0, sin(angle) -> angle, so the derived apparent
+    # (front-viewed) width should converge to the raw arc-length input
+    # (design_width_mm) -- the small-taper/small-coverage case is nearly
+    # flat, where the arc-vs-chord distinction barely matters.
     geom = _geom(bottom_diameter=1000, top_diameter=1000, height=100, design_width=1, top_offset=0)
     design = cup_etch.design_geometry_for_image(geom, src_w=1, src_h=100)
-    ratio = design.arc_length_mm / geom.design_width_mm
+    ratio = design.apparent_width_mm / geom.design_width_mm
     assert ratio == pytest.approx(1.0, abs=0.001)
+    assert design.apparent_width_mm < geom.design_width_mm  # still strictly narrower, any angle
+
+
+def test_apparent_width_is_exact_sin_of_center_phi():
+    # Regression check that center_phi_rad is derived via plain division
+    # (arc = angle * diameter, exact for an arc-length input) rather than
+    # asin -- a reintroduced asin here would silently break every apparent
+    # width and, via _u_src_grid_tapered's reuse of this same field, the
+    # per-row taper correction itself.
+    geom = _geom(bottom_diameter=100, top_diameter=60, height=100, design_width=40, top_offset=0)
+    design = cup_etch.design_geometry_for_image(geom, src_w=40, src_h=100)  # fills the whole band
+    assert design.center_phi_rad == pytest.approx(geom.design_width_mm / design.local_diameter_mm)
+    assert design.apparent_width_mm == pytest.approx(
+        design.local_diameter_mm * math.sin(design.center_phi_rad)
+    )
 
 
 def test_design_geometry_rejects_design_taller_than_remaining_space_below_offset():
@@ -207,15 +223,32 @@ def test_design_geometry_accepts_design_within_remaining_space_below_offset():
     assert design.height_mm == pytest.approx(15)
 
 
-def test_design_geometry_rejects_width_too_close_to_local_diameter():
-    # No taper (bottom == top diameter) -> local diameter is always exactly
-    # 70mm regardless of placement or height, making max_width easy to reason
-    # about: 70 * sin(87.5deg) =~ 69.93mm. A square image at 69.965mm keeps
-    # comfortably clear of the "doesn't fit the available height" check
-    # while still tripping the width-vs-diameter one.
-    geom = _geom(bottom_diameter=70, top_diameter=70, height=100, design_width=69.965, top_offset=0)
+def test_design_geometry_rejects_arc_width_implying_more_than_max_wrap_angle():
+    # design_width_mm is an arc length now; dividing by the local diameter
+    # (no taper here, so it's always exactly 70mm) gives the half-angle
+    # directly, with no sin/asin involved -- 110mm needs an angle well past
+    # MAX_WRAP_ANGLE_DEG/2 at that diameter (threshold is ~106.9mm), and a
+    # wide/short image (2:1) keeps well clear of the separate "too tall for
+    # the cup" check so only this one fires.
+    geom = _geom(bottom_diameter=70, top_diameter=70, height=100, design_width=110, top_offset=0)
+    with pytest.raises(ValueError, match="more than 175 degrees"):
+        cup_etch.design_geometry_for_image(geom, src_w=2, src_h=1)
+
+
+def test_design_geometry_rejects_width_too_close_to_narrowest_diameter():
+    # A real taper (top narrower than bottom) with a design spanning the
+    # whole band (src_w=design_width, src_h=available_height, same trick as
+    # test_design_geometry_uses_band_average_diameter_when_design_fills_the_whole_band
+    # -- center diameter comes out as the plain band average, 80mm here).
+    # At design_width=68mm, the center's own half-angle (68/80 rad, ~53
+    # degrees) is nowhere near the max-wrap-angle limit, but the *apparent*
+    # width it implies (~60.1mm) exceeds what the narrowest point (60mm,
+    # the top rim) can show without near-infinite stretching (max ~59.94mm
+    # there) -- this is the anti-clip widening's own limit, distinct from
+    # the direct too-large-arc check above.
+    geom = _geom(bottom_diameter=100, top_diameter=60, height=100, design_width=68, top_offset=0)
     with pytest.raises(ValueError, match="near-infinite stretching"):
-        cup_etch.design_geometry_for_image(geom, src_w=1, src_h=1)  # square -> design_height == design_width
+        cup_etch.design_geometry_for_image(geom, src_w=68, src_h=100)
 
 
 # ---------------------------------------------------------------------------

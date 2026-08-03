@@ -557,23 +557,34 @@ into your rotary attachment's own calibration (LightBurn's "Rotary Setup"
 or equivalent) is still the diameter at the design's own vertical center,
 reported alongside the generated pattern so the two stay in sync.
 
-**Apparent width vs. the pattern's own physical width:** the design width
-you enter is how wide the finished etching should *look*, viewed head-on
--- but that's not the same as how wide the pattern itself physically is
-once it's actually etched onto the curved surface. Peeling (or unrolling)
-any design off a curved surface always yields more material than its own
-straight-line width -- the same reason a square wrapped around a cylinder
-isn't square once you peel the pattern back off it: the arc length between
-two points on a curve is always longer than the straight chord between
-them. `DesignGeometry.arc_length_mm` (`= phi_max_rad * local_diameter_mm`,
-using the canvas's own angular range -- see above -- not just what the
-design width and center diameter alone would imply) is the pattern's true
-physical size, and it's what actually determines the output PNG's pixel
-dimensions at a given resolution -- **this**, not the apparent width, is
-the number to enter as the image width in your rotary job, since a rotary
-attachment converts an image's mm-width into a rotation angle via arc
-length (angle = width / radius), which is the only relationship a
-physical rotation can produce. The tool reports both numbers clearly
+**Design width is an arc length, not the apparent width:** the design
+width you enter is a direct, along-the-surface measurement -- wrap a tape
+measure across the curved glass at the design's own vertical center, the
+same way you measured side length and distance from top. It's deliberately
+*not* "how wide the design should look, viewed head-on": that apparent
+(front-viewed) width isn't something you can measure directly on a curved
+surface without already doing the trig, whereas a tape laid flat against
+the glass is a plain, direct measurement. `DesignGeometry.apparent_width_mm`
+derives that front-viewed width for you (`= local_diameter_mm *
+sin(center_phi_rad)`, where `center_phi_rad = design_width_mm /
+local_diameter_mm` -- exact, since an arc length divided by its diameter
+*is* the angle, no trig needed for that step).
+
+Peeling (or unrolling) any design off a curved surface always yields more
+material than its own straight-line width -- the same reason a square
+wrapped around a cylinder isn't square once you peel the pattern back off
+it: the arc length between two points on a curve is always longer than the
+straight chord between them. That's why `apparent_width_mm` always comes
+out narrower than what you typed. Separately, `DesignGeometry.arc_length_mm`
+(`= phi_max_rad * local_diameter_mm`, using the canvas's own angular range
+-- see above -- which can be wider still than the design's own center-only
+angle whenever the design spans any taper) is the pattern's true physical
+size, and it's what actually determines the output PNG's pixel dimensions
+at a given resolution -- **this**, not what you typed or the apparent
+width, is the number to enter as the image width in your rotary job, since
+a rotary attachment converts an image's mm-width into a rotation angle via
+arc length (angle = width / radius), which is the only relationship a
+physical rotation can produce. The tool reports all of these clearly
 labeled, live as you type and again after generating.
 
 Because this corrects a *front-view* effect, it's only defined for a
@@ -593,10 +604,12 @@ are deliberately slant distances along the surface, not vertical heights
 -- vertical height isn't something you can measure directly without
 already knowing the taper, whereas a tape laid flat against the surface
 is a plain, direct measurement. From those four (which fully describe the
-frustum and where on it the design sits) plus a **design width** (how
-wide the finished etching should look, viewed head-on), the tool derives
-the wrap angle and the rotary-calibration diameter *at the design's own
-position*, plus how much axial height is available below the offset --
+frustum and where on it the design sits) plus a **design width** (wrap the
+tape across the glass at the design's own vertical center -- the same
+along-the-surface measurement, not how wide the design looks from the
+front), the tool derives the wrap angle and the rotary-calibration diameter
+*at the design's own position*, plus how much axial height is available
+below the offset --
 there's a live-updating readout of all three as you type, using the
 uploaded image's own dimensions (read client-side, no server round trip)
 to get the design's actual height right before you even generate anything.

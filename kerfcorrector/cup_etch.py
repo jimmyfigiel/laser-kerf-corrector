@@ -22,9 +22,14 @@ has to depend on r(v):
 
     phi(u, v) = asin(u * sin(phi_max) * r_center / r(v))
 
-where r_center is the radius at the design's own vertical center (what
-the design_width_mm input actually describes) and phi_max is the
-half-angle needed there alone. Because a rotary maps output column
+where r_center is the radius at the design's own vertical center and
+phi_max (called center_phi_rad below) is the half-angle needed there
+alone -- derived from design_width_mm, which is the arc length measured
+directly along the curved glass at the design's own vertical center (what
+you get wrapping a tape measure against the actual surface there; the
+apparent/front-viewed width at that same spot is a *derived* quantity,
+DesignGeometry.apparent_width_mm, always a bit narrower). Because a rotary
+maps output column
 linearly to rotation angle *uniformly across every row*
 (phi = u_out * phi_max_canvas, a single canvas-wide constant -- see
 DesignGeometry.phi_max_rad, which is wider than the phi_max implied by
@@ -55,7 +60,8 @@ from PIL import Image
 MAX_OUTPUT_PX = 2200  # keeps Floyd-Steinberg (a per-pixel Python loop) responsive
 
 MAX_WRAP_ANGLE_DEG = 175.0  # see design_width_mm's validation below for why
-_MAX_SIN_PHI_MAX = math.sin(math.radians(MAX_WRAP_ANGLE_DEG / 2.0))
+_MAX_PHI_RAD = math.radians(MAX_WRAP_ANGLE_DEG / 2.0)
+_MAX_SIN_PHI_MAX = math.sin(_MAX_PHI_RAD)
 
 
 @dataclass
@@ -65,7 +71,13 @@ class CupGeometry:
     bottom rims for the two circumferences, and lay it flat along the
     tapered side for the side length and the top offset (both the true
     along-the-surface slant distance, not vertical height -- that's not
-    directly measurable without already knowing the taper). The design's
+    directly measurable without already knowing the taper). design_width_mm
+    is likewise a direct, along-the-surface measurement: wrap the tape
+    across the curved glass at the design's own vertical center, the same
+    way you would to gauge how wide a label would need to be cut to wrap
+    that band -- NOT how wide the design looks from the front (that's a
+    derived quantity, DesignGeometry.apparent_width_mm, always a bit
+    narrower than this arc length for any curved surface). The design's
     own axial height and how much of the circumference it covers are both
     derived, not entered separately -- see design_geometry_for_image, since
     both also depend on the source image's own aspect ratio, not on this
@@ -74,7 +86,7 @@ class CupGeometry:
     bottom_circumference_mm: float
     top_circumference_mm: float
     side_length_mm: float
-    design_width_mm: float
+    design_width_mm: float  # arc length along the glass at the design's own vertical center -- see above
     top_offset_mm: float = 0.0  # slant distance from the top rim to the top of the design
 
     def __post_init__(self):
@@ -147,29 +159,37 @@ class DesignGeometry:
     image lower down, even on an identical cup)."""
 
     height_mm: float
-    local_diameter_mm: float  # diameter at the design's own vertical center -- what design_width_mm describes
-    phi_max_rad: float  # the output CANVAS's own angular half-range (see module docstring) -- can exceed
-    # asin(design_width_mm / local_diameter_mm) whenever the design spans any taper, since rows
-    # narrower than local_diameter_mm need more angular range to show their own full width.
+    local_diameter_mm: float  # diameter at the design's own vertical center
+    center_phi_rad: float  # design_width_mm / local_diameter_mm -- the design's own (un-widened)
+    # half-angle at its vertical center; arc = angle * diameter is exact (design_width_mm IS an
+    # arc length), so this needs no trig, unlike apparent_width_mm below.
+    phi_max_rad: float  # the output CANVAS's own angular half-range (see module docstring) -- can
+    # exceed center_phi_rad whenever the design spans any taper, since rows narrower than
+    # local_diameter_mm need more angular range to show their own full (apparent) width.
 
     @property
     def wrap_angle_deg(self) -> float:
         return math.degrees(self.phi_max_rad) * 2.0
 
     @property
+    def apparent_width_mm(self) -> float:
+        # How wide the design actually *looks*, viewed head-on, at its own
+        # vertical center -- always narrower than design_width_mm (the arc
+        # length you measured on the glass) for any nonzero angle, the same
+        # arc-vs-chord gap as arc_length_mm below, just at the design's own
+        # angular range (center_phi_rad) rather than the wider canvas one.
+        return self.local_diameter_mm * math.sin(self.center_phi_rad)
+
+    @property
     def arc_length_mm(self) -> float:
         # The pattern's own true physical width once actually applied to the
-        # curved surface -- NOT the same as the apparent (front-viewed) width
-        # the design width input describes. Peeling/unrolling any design off
-        # a curved surface yields its arc length (radius * angle in
-        # radians), which always exceeds the chord/apparent width (radius *
-        # sine of that angle) for any nonzero angle -- the same reason a
-        # square wrapped around a cylinder isn't square once peeled back
-        # off. This is the number to feed into the rotary attachment's own
-        # calibration: a rotary converts "image width in mm" to a rotation
-        # angle via arc length (angle = width / radius), not via chord
-        # length, since arc length is the only relationship rotation can
-        # physically produce.
+        # curved surface -- wider than apparent_width_mm above for the same
+        # reason, but measured across the canvas's own (possibly wider,
+        # anti-clip) angular range rather than just the center's. This is
+        # the number to feed into the rotary attachment's own calibration:
+        # a rotary converts "image width in mm" to a rotation angle via arc
+        # length (angle = width / radius), not via chord length, since arc
+        # length is the only relationship rotation can physically produce.
         return self.phi_max_rad * self.local_diameter_mm
 
 
@@ -197,31 +217,44 @@ def design_geometry_for_image(geom: CupGeometry, src_w: int, src_h: int) -> Desi
     center_offset_mm = top_offset_mm + height_mm / 2.0
     local_diameter_mm = geom.diameter_at_axial_offset_from_top(center_offset_mm)
 
+    # design_width_mm is an arc length (see CupGeometry's docstring), so its
+    # relationship to the design's own half-angle at its vertical center is
+    # exact and needs no trig: arc = angle * diameter.
+    center_phi_rad = geom.design_width_mm / local_diameter_mm
+    if center_phi_rad >= _MAX_PHI_RAD:
+        raise ValueError(
+            f"An arc length of {geom.design_width_mm:g}mm at this design's own diameter "
+            f"({local_diameter_mm:.1f}mm) would wrap more than {MAX_WRAP_ANGLE_DEG:g} degrees "
+            "around the cup -- use a smaller design width, or reposition the design somewhere "
+            "wider (a larger local diameter)."
+        )
+    apparent_width_mm = local_diameter_mm * math.sin(center_phi_rad)
+
     # Diameter is linear along the taper, so its extremes across the
     # design's own height span are just at the design's own top and bottom
     # -- no need to sample in between. The narrowest of the two needs the
-    # most angular range to show the design's own full width at that row
-    # (see module docstring); the canvas has to be sized to that row so no
-    # row's content ever gets clipped -- wider rows then use less than the
-    # full canvas width, leaving plain, undecorated glass either side.
+    # most angular range to show the design's own full (apparent) width at
+    # that row (see module docstring); the canvas has to be sized to that
+    # row so no row's content ever gets clipped -- wider rows then use less
+    # than the full canvas width, leaving plain, undecorated glass either side.
     top_d = geom.diameter_at_axial_offset_from_top(top_offset_mm)
     bottom_d = geom.diameter_at_axial_offset_from_top(top_offset_mm + height_mm)
     narrowest_diameter = min(top_d, bottom_d)
 
-    # design_width_mm / narrowest_diameter is exactly local_diameter_mm *
-    # sin(asin(design_width_mm/local_diameter_mm)) / narrowest_diameter,
-    # simplified to avoid a needless asin/sin round trip.
-    sin_needed = geom.design_width_mm / narrowest_diameter
+    sin_needed = apparent_width_mm / narrowest_diameter
     if sin_needed >= _MAX_SIN_PHI_MAX:
         raise ValueError(
             f"This design's narrowest point (diameter {narrowest_diameter:.1f}mm, within its own "
-            f"height range) can't show the full {geom.design_width_mm:g}mm design width without "
+            f"height range) can't show the full {apparent_width_mm:.1f}mm apparent width without "
             "its edges needing near-infinite stretching there -- keep the design width smaller, "
             "make it shorter (less of the taper), or reposition it somewhere with less taper."
         )
     phi_max_canvas = math.asin(sin_needed)
 
-    return DesignGeometry(height_mm=height_mm, local_diameter_mm=local_diameter_mm, phi_max_rad=phi_max_canvas)
+    return DesignGeometry(
+        height_mm=height_mm, local_diameter_mm=local_diameter_mm,
+        center_phi_rad=center_phi_rad, phi_max_rad=phi_max_canvas,
+    )
 
 
 def output_size_px(width_mm: float, height_mm: float, px_per_mm: float) -> tuple[int, int, float]:
@@ -312,7 +345,7 @@ def _u_src_grid_tapered(geom: CupGeometry, design: DesignGeometry,
     stays at a constant screen position across rows"). Values outside
     [-1, 1] mean "no design content here" (see warp_for_rotary_tapered)."""
     phi_max_canvas = design.phi_max_rad
-    center_phi_max = math.asin(geom.design_width_mm / design.local_diameter_mm)
+    center_phi_max = design.center_phi_rad
     r_center = design.local_diameter_mm / 2.0
 
     v = (np.arange(out_h, dtype=np.float64) + 0.5) / out_h  # 0..1, top to bottom of the design
@@ -338,8 +371,8 @@ def warp_for_rotary_tapered(source: np.ndarray, geom: CupGeometry, design: Desig
     proportioned correctly) at every height, not only at the design's own
     vertical center. See the module docstring for the derivation.
 
-    source must already be fit (see fit_cover) to the design's own apparent
-    aspect ratio (design_width_mm x design.height_mm), NOT to out_w:out_h --
+    source must already be fit (see fit_cover) to the design's own aspect
+    ratio (design_width_mm x design.height_mm), NOT to out_w:out_h --
     design.phi_max_rad (the canvas's own angular range) is generally wider
     than what design_width_mm alone implies, and rows away from the
     design's own narrowest point use less than that full range, leaving the
@@ -400,11 +433,11 @@ def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
     src_h, src_w = image_rgba.shape[:2]
     design = design_geometry_for_image(geom, src_w, src_h)
 
-    # Fit the source at its own apparent aspect ratio (design_width_mm x
+    # Fit the source at its own aspect ratio (design_width_mm x
     # design.height_mm -- matches the source's own proportions exactly, so
     # fit_cover has only rounding-sized slack to take up, never cropping).
     # The final output is wider than that: out_w is sized to the arc length
-    # (see DesignGeometry.arc_length_mm), not the apparent width, since
+    # (see DesignGeometry.arc_length_mm), not the design width alone, since
     # that's the pattern's real physical size once actually on the cup.
     # warp_for_rotary_tapered already samples from the fitted source by its
     # own dimensions regardless of the requested output width, so simply

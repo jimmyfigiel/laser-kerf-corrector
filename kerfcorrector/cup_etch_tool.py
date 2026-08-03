@@ -183,7 +183,7 @@ PAGE = """<!doctype html>
     <label>Distance from top <span class="unit length-unit">(mm)</span><span class="help-icon" data-help="Same kind of measurement as side length -- lay the tape flat along the side, from the top rim down to where the design should start. Matters because the diameter at the design's own position (not just the cup's overall taper) is what the projection below is corrected against.">?</span></label>
     <input type="number" id="p-offset" value="0" step="1" min="0">
 
-    <label>Design width <span class="unit length-unit">(mm)</span><span class="help-icon" data-help="How wide the finished etching should look, viewed head-on. The uploaded image is scaled to this width, keeping its own proportions (never cropped or stretched) -- its height is whatever that scaling works out to, not entered separately.">?</span></label>
+    <label>Design width <span class="unit length-unit">(mm)</span><span class="help-icon" data-help="Wrap a tape measure directly across the curved glass at the design's own vertical center -- the same along-the-surface measurement as side length and distance from top, not how wide the design looks from the front (that's calculated for you below). The uploaded image is scaled to this width, keeping its own proportions (never cropped or stretched) -- its height is whatever that scaling works out to, not entered separately.">?</span></label>
     <input type="number" id="p-width" value="60" step="1" min="1">
 
     <div id="computed-geom" class="sub"></div>
@@ -420,31 +420,45 @@ function computeGeometryPreview() {
   const centerOffset = axialOffset + designHeight / 2;
   const localDiameter = diameterAt(centerOffset);
 
+  // width is an arc length (measured directly on the glass), so its
+  // relationship to the design's own half-angle at its vertical center is
+  // exact -- no trig needed, unlike the apparent (front-viewed) width this
+  // implies, which does need sin -- this mirrors cup_etch.py's
+  // design_geometry_for_image exactly.
+  const maxPhi = 87.5 * Math.PI / 180;
+  const centerPhi = width / localDiameter;
+  if (centerPhi >= maxPhi) {
+    out.innerHTML = `<span class="err">An arc length of ${fmtLen(width)} ${currentUnit} at this design's own ` +
+      `diameter (${fmtLen(localDiameter)} ${currentUnit}) would wrap more than 175&deg; around the cup -- try a ` +
+      `smaller design width, or reposition the design somewhere wider.</span>`;
+    return;
+  }
+  const apparentWidth = localDiameter * Math.sin(centerPhi);
+
   // Diameter is linear along the taper, so its extremes across the
   // design's own height span are just at the design's own top and bottom
-  // -- this mirrors cup_etch.py's design_geometry_for_image exactly (see
-  // its comments for why the narrowest of the two governs the canvas's
-  // own angular range, and why sin_needed simplifies to width/narrowest
-  // without an asin/sin round trip).
+  // -- the narrowest of the two governs the canvas's own angular range
+  // (see cup_etch.py's comments on this same step).
   const narrowestDiameter = Math.min(diameterAt(axialOffset), diameterAt(axialOffset + designHeight));
-  const sinNeeded = width / narrowestDiameter;
-  const maxSin = Math.sin(87.5 * Math.PI / 180);
+  const sinNeeded = apparentWidth / narrowestDiameter;
+  const maxSin = Math.sin(maxPhi);
   if (sinNeeded >= maxSin) {
     out.innerHTML = `<span class="err">This design's narrowest point (diameter ` +
-      `${fmtLen(narrowestDiameter)} ${currentUnit}) can't show the full ${fmtLen(width)} ${currentUnit} design ` +
-      `width without its edges needing near-infinite stretching there -- try a narrower design width, a ` +
+      `${fmtLen(narrowestDiameter)} ${currentUnit}) can't show the full ${fmtLen(apparentWidth)} ${currentUnit} ` +
+      `apparent width without its edges needing near-infinite stretching there -- try a narrower design width, a ` +
       `shorter design, or a different position.</span>`;
     return;
   }
   const phiMaxCanvas = Math.asin(sinNeeded);
   const wrapAngle = 2 * phiMaxCanvas * 180 / Math.PI;
-  const arcLength = phiMaxCanvas * localDiameter;  // always > width -- see cup_etch.py's arc_length_mm
+  const arcLength = phiMaxCanvas * localDiameter;  // always > apparentWidth -- see cup_etch.py's arc_length_mm
   out.innerHTML = `Design height: <b>${fmtLen(designHeight)} ${currentUnit}</b> ` +
     `(available: ${fmtLen(availableHeight)} ${currentUnit})<br>` +
     `Diameter at design's position (rotary calibration): <b>${fmtLen(localDiameter)} ${currentUnit}</b><br>` +
     `Front coverage: <b>${wrapAngle.toFixed(0)}&deg;</b><br>` +
-    `Pattern's true physical width (enter this in your rotary job): <b>${fmtLen(arcLength)} ${currentUnit}</b> ` +
-    `(looks ${fmtLen(width)} ${currentUnit} wide viewed head-on, but the etched pattern itself is wider)`;
+    `Pattern's true physical width (enter this in your rotary job): <b>${fmtLen(arcLength)} ${currentUnit}</b><br>` +
+    `Looks <b>${fmtLen(apparentWidth)} ${currentUnit}</b> wide viewed head-on (narrower than the ` +
+    `${fmtLen(width)} ${currentUnit} you measured on the glass -- that's expected on any curved surface)`;
 }
 ['p-bottom-circ', 'p-top-circ', 'p-side', 'p-offset', 'p-width'].forEach(id =>
   document.getElementById(id).addEventListener('input', computeGeometryPreview));
@@ -842,10 +856,11 @@ def generate():
         # converts into a rotation angle via arc length.
         "output_width_mm": design.arc_length_mm,
         "output_height_mm": design.height_mm,
-        # How wide the design *looks* viewed head-on -- the original input,
-        # kept separately since it's a different number than the pattern's
-        # own physical width (see output_width_mm above).
-        "apparent_width_mm": geom.design_width_mm,
+        # How wide the design *looks* viewed head-on -- DERIVED from the
+        # design_width_mm input (an arc length measured on the glass, not
+        # this apparent/chord width itself), always narrower than both
+        # design_width_mm and output_width_mm above.
+        "apparent_width_mm": design.apparent_width_mm,
         "local_diameter_mm": design.local_diameter_mm,
         "wrap_angle_deg": design.wrap_angle_deg,
         "preview_data_url": preview_data_url,

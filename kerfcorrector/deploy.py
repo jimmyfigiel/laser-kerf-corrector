@@ -37,6 +37,19 @@ def _run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=REPO_DIR, capture_output=True, text=True, timeout=timeout)
 
 
+def _pip_python() -> str:
+    """sys.executable is unreliable inside a WSGI worker process -- it can
+    resolve to the web server's own binary rather than the interpreter
+    actually running this code (a known mod_wsgi/embedded-Python quirk),
+    which made `pip install` fail with a garbled "unable to load
+    configuration from pip" error even though pip itself was fine (running
+    the same install by hand, as plain `python3 -m pip ...`, worked with no
+    issue). Prefer whatever `python3` resolves to on PATH -- that's what a
+    normal interactive shell uses, confirmed working -- and only fall back
+    to sys.executable if that's not found at all."""
+    return shutil.which("python3") or sys.executable
+
+
 def _clear_pycache() -> int:
     cleared = 0
     for d in list(REPO_DIR.rglob("__pycache__")):
@@ -83,9 +96,11 @@ def deploy():
     # registers. Running this on every deploy, not just when requirements.txt
     # changed, is deliberate: pip no-ops quickly when everything's already
     # satisfied, so the cost of checking is low next to the cost of missing it.
-    pip_install = _run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], timeout=300)
+    pip_python = _pip_python()
+    pip_install = _run([pip_python, "-m", "pip", "install", "-r", "requirements.txt"], timeout=300)
     steps["pip_install"] = {
         "ok": pip_install.returncode == 0,
+        "python_used": pip_python,
         "stdout": pip_install.stdout.strip()[-2000:],
         "stderr": pip_install.stderr.strip()[-2000:],
     }

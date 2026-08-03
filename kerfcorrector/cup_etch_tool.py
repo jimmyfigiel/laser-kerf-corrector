@@ -485,10 +485,17 @@ document.getElementById('generate').addEventListener('click', async () => {
   img.src = data.preview_data_url;
   wrap.appendChild(img);
 
+  const requestedDpi = parseFloat(document.getElementById('p-dpi').value);
+  const dpiNote = data.effective_dpi < requestedDpi - 0.5
+    ? `<br><span style="color:#fc5">Resolution reduced to ${Math.round(data.effective_dpi)} DPI ` +
+      `(this design is large enough that ${requestedDpi} DPI would make an unreasonably huge file) -- ` +
+      `the file's own DPI tag reflects this, so its physical size is still exactly correct at ` +
+      `${Math.round(data.effective_dpi)} DPI.</span>`
+    : '';
   info.innerHTML =
-    `Output: <b>${data.output_w}&times;${data.output_h}px</b> -- ` +
+    `Output: <b>${data.output_w}&times;${data.output_h}px</b> at <b>${Math.round(data.effective_dpi)} DPI</b> -- ` +
     `<b>${fmtLen(data.output_width_mm)} ${currentUnit} &times; ${fmtLen(data.output_height_mm)} ${currentUnit}</b>, ` +
-    `${data.wrap_angle_deg.toFixed(0)}&deg; front coverage<br>` +
+    `${data.wrap_angle_deg.toFixed(0)}&deg; front coverage${dpiNote}<br>` +
     `This is the pattern's own true physical size (wider than it looks from ` +
     `the front, since peeling any design off a curved surface always yields ` +
     `more material than its straight-line width) -- looks ` +
@@ -496,7 +503,8 @@ document.getElementById('generate').addEventListener('click', async () => {
     `<b>enter ${fmtLen(data.output_width_mm)} ${currentUnit} as the image width in your rotary job</b> ` +
     `-- a rotary converts image width to a rotation angle via that true physical size, not the apparent one.<br>` +
     `Set your rotary attachment's object/roller diameter to <b>${fmtLen(data.local_diameter_mm)} ${currentUnit}</b> ` +
-    `to match this pattern (the diameter at this design's own vertical position).`;
+    `to match this pattern (the diameter at this design's own vertical position). The downloaded file's DPI ` +
+    `tag is set to match, so it should be usable as-is with no manual resizing.`;
   const link = document.createElement('a');
   link.className = 'download';
   link.href = API + '/api/download/' + data.download_token;
@@ -802,12 +810,17 @@ def generate():
             raise ValueError("Resolution must be between 3 and 1270 DPI.")
         px_per_mm = dpi / _MM_PER_INCH
         source = _load_image_array(body["token"])
-        out, out_w, out_h, design = cup_etch.build_pattern(
+        out, out_w, out_h, design, effective_px_per_mm = cup_etch.build_pattern(
             source, geom, px_per_mm, bool(body.get("dither")))
     except (KeyError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
 
-    png_bytes = _encode_png(out)
+    # Embed the *effective* DPI (not necessarily the one requested -- see
+    # output_size_px) as the file's own resolution metadata, so any DPI-aware
+    # software (image editors, laser/engraving software) reads the correct
+    # physical size directly from the file with no manual resizing needed.
+    effective_dpi = effective_px_per_mm * _MM_PER_INCH
+    png_bytes = _encode_png(out, effective_dpi)
     base = _UPLOADS[body["token"]]["filename"].rsplit(".", 1)[0]
     download_name = f"{base}.etch-pattern.png"
     download_token = _store(png_bytes, download_name)
@@ -816,6 +829,11 @@ def generate():
     return jsonify({
         "output_w": out_w,
         "output_h": out_h,
+        # The DPI actually embedded in the downloaded file -- equals the
+        # requested "dpi" input unless the image had to be capped down in
+        # pixel dimensions (see cup_etch.MAX_OUTPUT_PX), in which case this
+        # is lower so the file's physical size still matches its geometry.
+        "effective_dpi": effective_dpi,
         # The output PNG's true physical size -- what the pattern actually
         # measures once peeled/etched onto the curved surface. This is wider
         # than apparent_width_mm (arc length always exceeds chord length for
@@ -842,9 +860,9 @@ def generate():
     })
 
 
-def _encode_png(rgba: np.ndarray) -> bytes:
+def _encode_png(rgba: np.ndarray, dpi: float) -> bytes:
     buf = io.BytesIO()
-    Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG")
+    Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG", dpi=(dpi, dpi))
     return buf.getvalue()
 
 

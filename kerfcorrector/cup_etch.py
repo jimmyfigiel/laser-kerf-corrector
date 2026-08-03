@@ -224,14 +224,23 @@ def design_geometry_for_image(geom: CupGeometry, src_w: int, src_h: int) -> Desi
     return DesignGeometry(height_mm=height_mm, local_diameter_mm=local_diameter_mm, phi_max_rad=phi_max_canvas)
 
 
-def output_size_px(width_mm: float, height_mm: float, px_per_mm: float) -> tuple[int, int]:
+def output_size_px(width_mm: float, height_mm: float, px_per_mm: float) -> tuple[int, int, float]:
+    """Returns (w, h, effective_px_per_mm). effective_px_per_mm matches the
+    requested px_per_mm exactly unless the MAX_OUTPUT_PX cap kicked in, in
+    which case it's scaled down along with w/h -- callers need this actual
+    achieved value (not the originally requested px_per_mm) to embed a DPI
+    in the output file that's consistent with its own pixel dimensions, so
+    the physical size the file reports is always correct even when the
+    resolution had to be capped."""
     w = max(1, round(width_mm * px_per_mm))
     h = max(1, round(height_mm * px_per_mm))
+    effective_px_per_mm = px_per_mm
     if max(w, h) > MAX_OUTPUT_PX:
         scale = MAX_OUTPUT_PX / max(w, h)
         w = max(1, round(w * scale))
         h = max(1, round(h * scale))
-    return w, h
+        effective_px_per_mm = px_per_mm * scale
+    return w, h, effective_px_per_mm
 
 
 def fit_cover(image_rgba: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
@@ -382,8 +391,12 @@ _GRAY_WEIGHTS = np.array([0.299, 0.587, 0.114])
 
 
 def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
-                   dither: bool) -> tuple[np.ndarray, int, int, DesignGeometry]:
-    """Returns (rgba_uint8_array, out_w, out_h, design)."""
+                   dither: bool) -> tuple[np.ndarray, int, int, DesignGeometry, float]:
+    """Returns (rgba_uint8_array, out_w, out_h, design, effective_px_per_mm).
+    effective_px_per_mm is what the output's pixel dimensions actually
+    correspond to (see output_size_px) -- use it, not the requested
+    px_per_mm, to compute a DPI to embed in the saved file, so the file's
+    own physical size always matches its pixel dimensions exactly."""
     src_h, src_w = image_rgba.shape[:2]
     design = design_geometry_for_image(geom, src_w, src_h)
 
@@ -397,7 +410,7 @@ def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
     # own dimensions regardless of the requested output width, so simply
     # asking it for the wider out_w directly (no separate resize step)
     # produces the correctly-warped result at the physically-correct size.
-    out_w, out_h = output_size_px(design.arc_length_mm, design.height_mm, px_per_mm)
+    out_w, out_h, effective_px_per_mm = output_size_px(design.arc_length_mm, design.height_mm, px_per_mm)
     fit_w = max(1, round(out_h * geom.design_width_mm / design.height_mm))
     fitted = fit_cover(image_rgba, fit_w, out_h)
     warped = warp_for_rotary_tapered(fitted, geom, design, out_w, out_h)
@@ -409,4 +422,4 @@ def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
     else:
         out = warped
 
-    return out, out_w, out_h, design
+    return out, out_w, out_h, design, effective_px_per_mm

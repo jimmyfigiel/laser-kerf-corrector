@@ -114,14 +114,21 @@ def test_top_offset_at_or_beyond_side_length_rejected():
 # ---------------------------------------------------------------------------
 
 def test_output_size_matches_physical_dimensions_at_given_resolution():
-    w, h = cup_etch.output_size_px(width_mm=60, height_mm=30, px_per_mm=5)
+    w, h, effective_px_per_mm = cup_etch.output_size_px(width_mm=60, height_mm=30, px_per_mm=5)
     assert w == round(60 * 5)
     assert h == round(30 * 5)
+    assert effective_px_per_mm == pytest.approx(5)  # no cap triggered -- matches the request exactly
 
 
 def test_output_size_capped_to_keep_dither_responsive():
-    w, h = cup_etch.output_size_px(width_mm=600, height_mm=1000, px_per_mm=20)
+    w, h, effective_px_per_mm = cup_etch.output_size_px(width_mm=600, height_mm=1000, px_per_mm=20)
     assert max(w, h) <= cup_etch.MAX_OUTPUT_PX
+    # The cap silently shrinks the pixel dimensions relative to what was
+    # requested -- effective_px_per_mm must reflect that actual shrink so a
+    # DPI embedded from it still describes the file's own true physical
+    # size (not the originally requested, no-longer-honored resolution).
+    assert effective_px_per_mm < 20
+    assert w == pytest.approx(600 * effective_px_per_mm, abs=1)
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +396,7 @@ def test_build_pattern_shape_and_alpha_preserved():
     src = np.zeros((300, 300, 4), dtype=np.uint8)
     src[:, :, 0] = 128
     src[:, :, 3] = 200  # partial alpha, should survive resampling
-    out, out_w, out_h, design = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
+    out, out_w, out_h, design, _ = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
     assert out.shape == (out_h, out_w, 4)
     assert out[..., 3].mean() == pytest.approx(200, abs=2)
     assert design.height_mm == pytest.approx(geom.design_width_mm)  # square source -> square design
@@ -399,7 +406,7 @@ def test_build_pattern_with_dither_keeps_alpha_channel_undithered():
     geom = _geom(bottom_diameter=70, top_diameter=70, design_width=30)  # no taper -- see above
     src = np.random.default_rng(1).integers(0, 256, size=(300, 300, 4)).astype(np.uint8)
     src[:, :, 3] = 255
-    out, out_w, out_h, design = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=True)
+    out, out_w, out_h, design, _ = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=True)
     assert set(np.unique(out[..., 0]).tolist()) <= {0, 255}
     # LANCZOS resizing + bilinear resampling of a uniform field can round a
     # handful of edge pixels to 254 instead of 255 -- not a functional bug,
@@ -416,7 +423,7 @@ def test_build_pattern_leaves_transparent_margins_on_a_real_taper():
     geom = _geom(bottom_diameter=100, top_diameter=60, height=100, design_width=10)  # real taper
     src = np.zeros((300, 300, 4), dtype=np.uint8)
     src[:, :, 3] = 255
-    out, out_w, out_h, design = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
+    out, out_w, out_h, design, _ = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
     # The design's own top (narrower than its center, since top_diameter <
     # bottom_diameter here) should reach further across than a wider row
     # elsewhere in the design -- check the very top row has less transparent
@@ -441,7 +448,7 @@ def test_build_pattern_preserves_full_image_width_no_cropping_for_wide_source():
     src[:, :5, 1] = 255  # green marker at the far left edge
     src[:, -5:, 1] = 255  # green marker at the far right edge
     src[:, :, 3] = 255
-    out, out_w, out_h, design = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
+    out, out_w, out_h, design, _ = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
     assert design.height_mm == pytest.approx(geom.design_width_mm * 100 / 400)
     assert out[out_h // 2, :5, 1].max() > 100
     assert out[out_h // 2, -5:, 1].max() > 100
@@ -465,8 +472,8 @@ def test_build_pattern_output_width_matches_arc_length_not_apparent_width():
     src = np.zeros((300, 300, 4), dtype=np.uint8)
     src[:, :, 3] = 255
     px_per_mm = 3
-    out, out_w, out_h, design = cup_etch.build_pattern(src, geom, px_per_mm=px_per_mm, dither=False)
-    expected_w, expected_h = cup_etch.output_size_px(design.arc_length_mm, design.height_mm, px_per_mm)
+    out, out_w, out_h, design, _ = cup_etch.build_pattern(src, geom, px_per_mm=px_per_mm, dither=False)
+    expected_w, expected_h, _ = cup_etch.output_size_px(design.arc_length_mm, design.height_mm, px_per_mm)
     assert (out_w, out_h) == (expected_w, expected_h)
-    apparent_w, _ = cup_etch.output_size_px(geom.design_width_mm, design.height_mm, px_per_mm)
+    apparent_w, _, _ = cup_etch.output_size_px(geom.design_width_mm, design.height_mm, px_per_mm)
     assert out_w > apparent_w  # arc length always exceeds the apparent/chord width

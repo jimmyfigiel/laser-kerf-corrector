@@ -407,7 +407,29 @@ function computeGeometryPreview() {
     return;
   }
 
-  const designHeight = width * uploadedImgH / uploadedImgW;
+  const topD = 2 * topR, bottomD = 2 * bottomR;
+  const diameterAt = (axialFromTop) => topD + (bottomD - topD) * (axialFromTop / availableHeight);
+
+  // Solved self-consistently, not by a single multiply -- mirrors
+  // cup_etch.py's design_height_for_image_mm exactly (see its comment for
+  // why: height depends on the *apparent* width at the design's own
+  // vertical center, but the center's own position -- and hence its local
+  // diameter, which the apparent width depends on -- shifts with the
+  // height being solved for). Skipping this is what caused a real bug:
+  // round source images came out visibly taller than wide once projected.
+  const aspect = uploadedImgH / uploadedImgW;
+  let designHeight = width * aspect;  // first guess: ignore curvature entirely
+  for (let i = 0; i < 100; i++) {
+    const localD = diameterAt(axialOffset + designHeight / 2);
+    const apparent = localD * Math.sin(width / localD);
+    const newHeight = apparent * aspect;
+    if (Math.abs(newHeight - designHeight) < 1e-9 * Math.max(1, designHeight)) {
+      designHeight = newHeight;
+      break;
+    }
+    designHeight = 0.5 * designHeight + 0.5 * newHeight;  // damped, for stability
+  }
+
   if (axialOffset + designHeight > availableHeight) {
     const remaining = availableHeight - axialOffset;
     out.innerHTML = `<span class="err">At this width, the image would be ` +
@@ -415,8 +437,6 @@ function computeGeometryPreview() {
       `below the offset on this ${fmtLen(availableHeight)} ${currentUnit}-tall side.</span>`;
     return;
   }
-  const topD = 2 * topR, bottomD = 2 * bottomR;
-  const diameterAt = (axialFromTop) => topD + (bottomD - topD) * (axialFromTop / availableHeight);
   const centerOffset = axialOffset + designHeight / 2;
   const localDiameter = diameterAt(centerOffset);
 

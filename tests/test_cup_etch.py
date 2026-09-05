@@ -135,26 +135,50 @@ def test_output_size_capped_to_keep_dither_responsive():
 # design_height_for_image_mm / design_geometry_for_image
 # ---------------------------------------------------------------------------
 
-def test_design_height_for_image_mm_preserves_source_aspect_ratio():
+def test_design_height_for_image_mm_preserves_source_aspect_ratio_for_a_cylinder():
+    # No taper -> local diameter is the same everywhere regardless of the
+    # design's own height, so there's no self-referential curvature
+    # correction to solve for.
+    geom = cup_etch.CupGeometry(
+        bottom_circumference_mm=80 * math.pi, top_circumference_mm=80 * math.pi,
+        side_length_mm=100, design_width_mm=1,  # tiny angle -> arc/apparent gap is negligible
+    )
+    # A 400x200 (2:1) source scaled to a 1mm design width should come out ~0.5mm tall.
+    assert cup_etch.design_height_for_image_mm(geom, src_w=400, src_h=200) == pytest.approx(0.5, abs=1e-4)
+
+
+def test_design_height_for_image_mm_is_self_consistent_on_a_real_taper():
+    # On a real taper (or even a cylinder at a non-tiny angle -- see the
+    # arc-vs-apparent tests above), height can't be a plain multiply of the
+    # raw (arc-length) design width -- see the function's own docstring for
+    # why. Whatever height it settles on must be exactly consistent with
+    # the apparent width AT that height's own vertical center, by
+    # construction, and must be smaller than the naive (uncorrected)
+    # multiply would give, since apparent width is always narrower than
+    # the arc length that produced it.
     geom = cup_etch.CupGeometry(
         bottom_circumference_mm=80 * math.pi, top_circumference_mm=60 * math.pi,
         side_length_mm=100, design_width_mm=60,
     )
-    # A 400x200 (2:1) source scaled to a 60mm design width should come out 30mm tall.
-    assert cup_etch.design_height_for_image_mm(geom, src_w=400, src_h=200) == pytest.approx(30)
+    height_mm = cup_etch.design_height_for_image_mm(geom, src_w=400, src_h=200)
+    local_diameter_mm = geom.diameter_at_axial_offset_from_top(height_mm / 2.0)
+    apparent_width_mm = local_diameter_mm * math.sin(geom.design_width_mm / local_diameter_mm)
+    assert height_mm == pytest.approx(apparent_width_mm * 200 / 400)
+    assert height_mm < 30  # the naive (uncorrected) multiply this used to be
 
 
-def test_design_geometry_uses_band_average_diameter_when_design_fills_the_whole_band():
-    # A square (1:1) image at design_width_mm=30 fills the whole 100mm
-    # available height exactly (30mm wide... wait -- this test wants
-    # height == available_height, so pick a source aspect that makes that
-    # true: height_mm = width * src_h/src_w = 100 -> src_h/src_w = 100/30).
-    geom = _geom(bottom_diameter=80, top_diameter=60, height=100, design_width=30, top_offset=0)
-    design = cup_etch.design_geometry_for_image(geom, src_w=30, src_h=100)
-    assert design.height_mm == pytest.approx(100, abs=1e-6)
-    # Filling the whole band centers the design's own center at the band's
-    # own mid-height -> local diameter equals the plain band average.
-    assert design.local_diameter_mm == pytest.approx((80 + 60) / 2)
+def test_design_geometry_uses_band_average_diameter_when_design_center_is_at_mid_band():
+    # Placing the design's own vertical center exactly at the band's own
+    # mid-height must give local_diameter_mm the plain average of the top
+    # and bottom diameters -- tested with a deliberately tiny design height
+    # (a very wide, very short image) so the center sits almost exactly at
+    # top_offset=50 (already the 100mm band's own midpoint) regardless of
+    # any curvature self-correction, which only matters once height is a
+    # non-negligible fraction of the band.
+    geom = _geom(bottom_diameter=80, top_diameter=60, height=100, design_width=1, top_offset=50)
+    design = cup_etch.design_geometry_for_image(geom, src_w=1000, src_h=1)
+    assert design.height_mm < 0.01  # negligible -- center is essentially at top_offset itself
+    assert design.local_diameter_mm == pytest.approx((80 + 60) / 2, abs=1e-3)
 
 
 def test_design_geometry_local_diameter_depends_on_vertical_placement():
@@ -211,6 +235,69 @@ def test_apparent_width_is_exact_sin_of_center_phi():
     )
 
 
+def test_apparent_width_over_height_matches_source_aspect_ratio():
+    # Regression test: build_pattern's fit_w is computed from
+    # design.apparent_width_mm and design.height_mm, not design_width_mm
+    # (the raw arc-length input) -- this ratio has to equal the source's
+    # own aspect ratio exactly, or fit_cover stretches the source before
+    # it's even warped. Using design_width_mm there instead used to work
+    # only because design.height_mm was a direct multiple of it; now that
+    # height_mm is solved self-consistently against apparent_width_mm (see
+    # design_height_for_image_mm), only apparent_width_mm still cancels.
+    geom = _geom(bottom_diameter=100, top_diameter=60, height=100, design_width=60, top_offset=0)
+    design = cup_etch.design_geometry_for_image(geom, src_w=400, src_h=300)
+    assert design.apparent_width_mm / design.height_mm == pytest.approx(400 / 300)
+
+
+def test_fitted_source_width_px_does_not_stretch_a_circular_marker_on_a_real_taper():
+    # Regression test for a real fit_w bug: fitted_source_width_px (what
+    # build_pattern actually calls) has to use design.apparent_width_mm,
+    # not design_width_mm (the raw arc-length input) -- on a real taper,
+    # using design_width_mm there stretches the fitted source before it's
+    # even warped, distorting a circular marker into an oval. Checked via
+    # the actual fit_cover call build_pattern makes, using the exact
+    # function under test rather than re-deriving the formula independently.
+    geom = _geom(bottom_diameter=100, top_diameter=60, height=100, design_width=60, top_offset=0)
+    src_h, src_w = 300, 300  # square source -> a circular marker should fit_cover to a circle
+    design = cup_etch.design_geometry_for_image(geom, src_w=src_w, src_h=src_h)
+    out_w, out_h, _ = cup_etch.output_size_px(design.arc_length_mm, design.height_mm, px_per_mm=4)
+
+    src = np.zeros((src_h, src_w, 4), dtype=np.uint8)
+    yy, xx = np.mgrid[0:src_h, 0:src_w]
+    # A circle close to the frame's own edges -- like the real reported
+    # case -- is what actually makes the bug visible: fit_cover never
+    # stretches (it scales uniformly and crops), so a small circle with
+    # generous margin survives a wrong fit_w unscathed; only content near
+    # the edges gets cropped asymmetrically by the wrong frame aspect ratio.
+    r = min(src_w, src_h) * 0.49
+    mask = (xx - src_w / 2) ** 2 + (yy - src_h / 2) ** 2 <= r ** 2
+    src[mask, 3] = 255
+
+    fit_w = cup_etch.fitted_source_width_px(design, out_h)
+    fitted = cup_etch.fit_cover(src, fit_w, out_h)
+    fitted_row_width = (fitted[out_h // 2, :, 3] > 0).sum()
+    fitted_col_height = (fitted[:, fit_w // 2, 3] > 0).sum()
+    assert fitted_row_width == pytest.approx(fitted_col_height, rel=0.05)
+
+
+def test_round_source_stays_round_not_vertically_elongated():
+    # Regression test for a real reported bug: a square (round-logo-shaped)
+    # source came out visibly *taller than wide* once projected, because
+    # design_height_for_image_mm used to multiply the source's aspect ratio
+    # directly by the raw arc-length input -- ignoring that the same
+    # source, once actually viewed from the front, is scaled by the
+    # (always narrower) *apparent* width instead. At a realistic, sizable
+    # wrap angle the gap is large enough to be obviously wrong: this exact
+    # geometry (a typical cup) previously gave height=60mm against an
+    # apparent width of ~53mm, a 13% vertical stretch.
+    geom = cup_etch.CupGeometry(
+        bottom_circumference_mm=285, top_circumference_mm=207,
+        side_length_mm=148, top_offset_mm=0, design_width_mm=60,
+    )
+    design = cup_etch.design_geometry_for_image(geom, src_w=100, src_h=100)  # square/round source
+    assert design.height_mm == pytest.approx(design.apparent_width_mm, rel=1e-6)
+
+
 def test_design_geometry_rejects_design_taller_than_remaining_space_below_offset():
     geom = _geom(bottom_diameter=80, top_diameter=60, height=100, design_width=30, top_offset=80)
     with pytest.raises(ValueError, match="remaining"):
@@ -219,8 +306,12 @@ def test_design_geometry_rejects_design_taller_than_remaining_space_below_offset
 
 def test_design_geometry_accepts_design_within_remaining_space_below_offset():
     geom = _geom(bottom_diameter=80, top_diameter=60, height=100, design_width=10, top_offset=80)
-    design = cup_etch.design_geometry_for_image(geom, src_w=10, src_h=15)  # 15mm tall, fits in the 20mm left
-    assert design.height_mm == pytest.approx(15)
+    design = cup_etch.design_geometry_for_image(geom, src_w=10, src_h=15)  # ~15mm tall, fits in the 20mm left
+    # A small design width keeps the arc-vs-apparent correction small, so
+    # this stays close to (but, per design_height_for_image_mm, strictly
+    # under) the naive 15mm a plain multiply would give.
+    assert design.height_mm == pytest.approx(15, abs=0.2)
+    assert design.height_mm < 15
 
 
 def test_design_geometry_rejects_arc_width_implying_more_than_max_wrap_angle():
@@ -236,19 +327,18 @@ def test_design_geometry_rejects_arc_width_implying_more_than_max_wrap_angle():
 
 
 def test_design_geometry_rejects_width_too_close_to_narrowest_diameter():
-    # A real taper (top narrower than bottom) with a design spanning the
-    # whole band (src_w=design_width, src_h=available_height, same trick as
-    # test_design_geometry_uses_band_average_diameter_when_design_fills_the_whole_band
-    # -- center diameter comes out as the plain band average, 80mm here).
-    # At design_width=68mm, the center's own half-angle (68/80 rad, ~53
-    # degrees) is nowhere near the max-wrap-angle limit, but the *apparent*
-    # width it implies (~60.1mm) exceeds what the narrowest point (60mm,
-    # the top rim) can show without near-infinite stretching (max ~59.94mm
-    # there) -- this is the anti-clip widening's own limit, distinct from
-    # the direct too-large-arc check above.
-    geom = _geom(bottom_diameter=100, top_diameter=60, height=100, design_width=68, top_offset=0)
+    # A real taper (top narrower than bottom), square image (so the
+    # self-consistent height solve just needs a taper, not a specific
+    # aspect ratio to hit a particular height). At design_width=75mm, the
+    # center's own half-angle (~56 degrees) is nowhere near the max-wrap-
+    # angle limit, but the *apparent* width it implies (~62.3mm) exceeds
+    # what the narrowest point (60mm, the top rim) can show without
+    # near-infinite stretching (max ~59.94mm there) -- this is the
+    # anti-clip widening's own limit, distinct from the direct
+    # too-large-arc check above.
+    geom = _geom(bottom_diameter=100, top_diameter=60, height=100, design_width=75, top_offset=0)
     with pytest.raises(ValueError, match="near-infinite stretching"):
-        cup_etch.design_geometry_for_image(geom, src_w=68, src_h=100)
+        cup_etch.design_geometry_for_image(geom, src_w=1, src_h=1)
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +522,11 @@ def test_build_pattern_shape_and_alpha_preserved():
     out, out_w, out_h, design, _ = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
     assert out.shape == (out_h, out_w, 4)
     assert out[..., 3].mean() == pytest.approx(200, abs=2)
-    assert design.height_mm == pytest.approx(geom.design_width_mm)  # square source -> square design
+    # Square source -> square design, i.e. height matches the *apparent*
+    # width at the design's own center (not the raw arc-length input --
+    # see design_height_for_image_mm; a round/square source coming out
+    # taller than wide was exactly the bug this self-consistent solve fixes).
+    assert design.height_mm == pytest.approx(design.apparent_width_mm)
 
 
 def test_build_pattern_with_dither_keeps_alpha_channel_undithered():
@@ -482,7 +576,7 @@ def test_build_pattern_preserves_full_image_width_no_cropping_for_wide_source():
     src[:, -5:, 1] = 255  # green marker at the far right edge
     src[:, :, 3] = 255
     out, out_w, out_h, design, _ = cup_etch.build_pattern(src, geom, px_per_mm=3, dither=False)
-    assert design.height_mm == pytest.approx(geom.design_width_mm * 100 / 400)
+    assert design.height_mm == pytest.approx(design.apparent_width_mm * 100 / 400)
     assert out[out_h // 2, :5, 1].max() > 100
     assert out[out_h // 2, -5:, 1].max() > 100
 

@@ -196,8 +196,35 @@ class DesignGeometry:
 def design_height_for_image_mm(geom: CupGeometry, src_w: int, src_h: int) -> float:
     """The physical height the design occupies once the source image is
     scaled -- preserving its own aspect ratio, never cropped or stretched
-    -- to the chosen design width."""
-    return geom.design_width_mm * src_h / src_w
+    -- to the chosen design width.
+
+    Solved self-consistently, not by a single multiply: height has to scale
+    with the *apparent* (front-viewed) width at the design's own vertical
+    center -- design_width_mm is an arc length (see CupGeometry's
+    docstring), always a bit wider than that apparent width -- but the
+    center's own position (and hence its local diameter, which the apparent
+    width depends on) shifts with the height being solved for. Diameter
+    varies linearly with axial position, so a damped fixed-point iteration
+    converges quickly and stably for any real cup geometry (checked against
+    both a typical cup and a deliberately extreme taper+aspect-ratio
+    combination -- neither needed more than ~35 of the 100 iterations
+    allowed here). Skipping this and just multiplying by design_width_mm
+    directly (as if it were the apparent width) is what caused a real bug:
+    round source images came out visibly taller than wide once projected,
+    worse the wider the wrap angle."""
+    aspect = src_h / src_w
+    top_offset_mm = geom.axial_top_offset_mm
+    height_mm = geom.design_width_mm * aspect  # first guess: ignore curvature entirely
+    for _ in range(100):
+        local_diameter_mm = geom.diameter_at_axial_offset_from_top(top_offset_mm + height_mm / 2.0)
+        phi = geom.design_width_mm / local_diameter_mm
+        apparent_width_mm = local_diameter_mm * math.sin(phi)
+        new_height_mm = apparent_width_mm * aspect
+        if abs(new_height_mm - height_mm) < 1e-9 * max(1.0, height_mm):
+            height_mm = new_height_mm
+            break
+        height_mm = 0.5 * height_mm + 0.5 * new_height_mm  # damped, for stability
+    return height_mm
 
 
 def design_geometry_for_image(geom: CupGeometry, src_w: int, src_h: int) -> DesignGeometry:
@@ -219,7 +246,10 @@ def design_geometry_for_image(geom: CupGeometry, src_w: int, src_h: int) -> Desi
 
     # design_width_mm is an arc length (see CupGeometry's docstring), so its
     # relationship to the design's own half-angle at its vertical center is
-    # exact and needs no trig: arc = angle * diameter.
+    # exact and needs no trig: arc = angle * diameter. (height_mm above was
+    # already solved self-consistently against this same relationship, so
+    # this recomputation at the converged height just recovers the values
+    # design_height_for_image_mm used internally on its final iteration.)
     center_phi_rad = geom.design_width_mm / local_diameter_mm
     if center_phi_rad >= _MAX_PHI_RAD:
         raise ValueError(
@@ -423,6 +453,19 @@ def floyd_steinberg_dither(gray: np.ndarray) -> np.ndarray:
 _GRAY_WEIGHTS = np.array([0.299, 0.587, 0.114])
 
 
+def fitted_source_width_px(design: DesignGeometry, out_h: int) -> int:
+    """The pixel width to fit_cover the source to before warping, given the
+    output canvas is out_h pixels tall. Must use apparent_width_mm, NOT
+    design_width_mm (the raw arc-length input) -- design.height_mm was
+    solved (see design_height_for_image_mm) to be proportional to
+    apparent_width_mm, not design_width_mm directly, so only
+    apparent_width_mm/height_mm actually cancels down to the source's own
+    aspect ratio. Using design_width_mm here instead reintroduces a
+    stretching bug: it only happened to work before design_width_mm meant
+    an arc length, when height_mm *was* a direct multiple of it."""
+    return max(1, round(out_h * design.apparent_width_mm / design.height_mm))
+
+
 def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
                    dither: bool) -> tuple[np.ndarray, int, int, DesignGeometry, float]:
     """Returns (rgba_uint8_array, out_w, out_h, design, effective_px_per_mm).
@@ -444,7 +487,7 @@ def build_pattern(image_rgba: np.ndarray, geom: CupGeometry, px_per_mm: float,
     # asking it for the wider out_w directly (no separate resize step)
     # produces the correctly-warped result at the physically-correct size.
     out_w, out_h, effective_px_per_mm = output_size_px(design.arc_length_mm, design.height_mm, px_per_mm)
-    fit_w = max(1, round(out_h * geom.design_width_mm / design.height_mm))
+    fit_w = fitted_source_width_px(design, out_h)
     fitted = fit_cover(image_rgba, fit_w, out_h)
     warped = warp_for_rotary_tapered(fitted, geom, design, out_w, out_h)
 
